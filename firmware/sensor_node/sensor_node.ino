@@ -1,0 +1,255 @@
+/*
+ * 무선 진동센서 노드 — XIAO ESP32C3 + ADXL345
+ *
+ * 바닥에 붙어 충격을 감지하고 ESP-NOW 로 수신기에 알린다.
+ * 평소에는 딥슬립, ADXL345 의 Activity 인터럽트가 깨운다.
+ *
+ * 배선 (ADXL345 GY-291 → XIAO ESP32C3):
+ *     VCC → 3V3      ⚠ 5V 아님. 배터리 구동 시 5V 핀은 죽어 있다.
+ *     GND → GND
+ *     SDA → D4 (GPIO6)
+ *     SCL → D5 (GPIO7)
+ *     INT1→ D1 (GPIO3)   ⚠ 딥슬립 웨이크업 가능한 핀이어야 한다 (C3: GPIO0~5)
+ *     CS  → 3V3          (I2C 모드 고정)
+ *     SDO → GND          (주소 0x53)
+ *
+ * 배터리: 뒷면 BAT+ / BAT- 패드. ⚠ 극성 반대면 보드가 즉시 죽는다.
+ *
+ * ── 개발 순서 (중요) ────────────────────────────────────────────────
+ * DEBUG_MODE = 1 로 먼저 로직을 완성하세요. 딥슬립 상태에서는 시리얼
+ * 디버깅이 거의 불가능합니다. 유선·상시전원으로 임계값을 정한 뒤
+ * DEBUG_MODE = 0 으로 바꿔 절전을 얹는 순서가 훨씬 빠릅니다.
+ * ───────────────────────────────────────────────────────────────────
+ */
+
+#include <Wire.h>
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_sleep.h>
+
+// ─── 설정 ──────────────────────────────────────────────────────────
+
+#define DEBUG_MODE 1        // 1 = 안 자고 계속 측정값 출력 (개발용)
+                            // 0 = 딥슬립 + 인터럽트 (실사용)
+
+// 수신기 XIAO 의 MAC 주소. receiver 스케치를 먼저 올려 시리얼에 찍힌 값을 넣으세요.
+uint8_t RECEIVER_MAC[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };  // 브로드캐스트(임시)
+
+const uint8_t PIN_INT1   = 3;      // D1
+const uint8_t ADXL_ADDR  = 0x53;   // SDO=GND
+
+// 충격 임계값. 62.5 mg/LSB → 32 ≈ 2.0g
+// 너무 낮으면 발소리에도 깨어나 배터리를 갉아먹는다.
+const uint8_t ACT_THRESHOLD = 32;
+
+const uint16_t CAPTURE_MS = 400;   // 깨어난 뒤 파형을 볼 시간
+const char*    DEVICE_ID  = "vib-01";
+
+// ─── ADXL345 레지스터 ──────────────────────────────────────────────
+
+#define REG_THRESH_ACT   0x24
+#define REG_ACT_INACT    0x27
+#define REG_BW_RATE      0x2C
+#define REG_POWER_CTL    0x2D
+#define REG_INT_ENABLE   0x2E
+#define REG_INT_MAP      0x2F
+#define REG_INT_SOURCE   0x30
+#define REG_DATA_FORMAT  0x31
+#define REG_DATAX0       0x32
+#define REG_DEVID        0x00
+
+// ─── 전송 페이로드 ─────────────────────────────────────────────────
+
+typedef struct __attribute__((packed)) {
+  char     device_id[8];
+  uint32_t seq;
+  float    peak_g;        // 충격 최대 크기
+  float    duration_ms;   // 임계 초과가 지속된 시간
+  uint16_t battery_mv;    // 0 = 미측정
+} ImpactMsg;
+
+RTC_DATA_ATTR uint32_t boot_count = 0;   // 딥슬립을 넘어 유지된다
+
+// ─── I2C 헬퍼 ─────────────────────────────────────────────────────
+
+void adxlWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ADXL_ADDR);
+  Wire.write(reg);
+  Wire.write(val);
+  Wire.endTransmission();
+}
+
+uint8_t adxlRead(uint8_t reg) {
+  Wire.beginTransmission(ADXL_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+  Wire.requestFrom((int)ADXL_ADDR, 1);
+  return Wire.available() ? Wire.read() : 0;
+}
+
+void adxlReadXYZ(int16_t &x, int16_t &y, int16_t &z) {
+  Wire.beginTransmission(ADXL_ADDR);
+  Wire.write(REG_DATAX0);
+  Wire.endTransmission(false);
+  Wire.requestFrom((int)ADXL_ADDR, 6);
+  x = Wire.read() | (Wire.read() << 8);
+  y = Wire.read() | (Wire.read() << 8);
+  z = Wire.read() | (Wire.read() << 8);
+}
+
+// ±16g, full resolution 에서 3.9 mg/LSB
+float toG(int16_t raw) { return raw * 0.0039f; }
+
+// ─── ADXL345 초기화 ────────────────────────────────────────────────
+
+bool adxlBegin() {
+  uint8_t id = adxlRead(REG_DEVID);
+  if (id != 0xE5) {
+    Serial.printf("ADXL345 를 찾지 못했습니다 (DEVID=0x%02X, 기대 0xE5)\n", id);
+    Serial.println("  배선과 SDO/CS 연결을 확인하세요.");
+    return false;
+  }
+
+  adxlWrite(REG_POWER_CTL, 0x00);      // 대기
+  adxlWrite(REG_DATA_FORMAT, 0x0B);    // full-res, ±16g
+  adxlWrite(REG_BW_RATE, 0x0A);        // 100 Hz
+
+  // Activity 인터럽트: 임계 초과 시 INT1 을 HIGH 로
+  adxlWrite(REG_THRESH_ACT, ACT_THRESHOLD);
+  adxlWrite(REG_ACT_INACT, 0x70);      // x,y,z 모두 참여 (AC 커플링 없음)
+  adxlWrite(REG_INT_MAP, 0x00);        // 모든 인터럽트를 INT1 으로
+  adxlWrite(REG_INT_ENABLE, 0x10);     // Activity 만 활성
+  adxlRead(REG_INT_SOURCE);            // 래치 초기화
+
+  adxlWrite(REG_POWER_CTL, 0x08);      // 측정 시작
+  return true;
+}
+
+// ─── ESP-NOW ───────────────────────────────────────────────────────
+
+bool espnowBegin() {
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW 초기화 실패");
+    return false;
+  }
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, RECEIVER_MAC, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  if (esp_now_add_peer(&peer) != ESP_OK) {
+    Serial.println("ESP-NOW peer 등록 실패");
+    return false;
+  }
+  return true;
+}
+
+void sendImpact(float peak_g, float dur_ms) {
+  ImpactMsg m = {};
+  strncpy(m.device_id, DEVICE_ID, sizeof(m.device_id) - 1);
+  m.seq = boot_count;
+  m.peak_g = peak_g;
+  m.duration_ms = dur_ms;
+  m.battery_mv = 0;
+
+  esp_err_t r = esp_now_send(RECEIVER_MAC, (uint8_t *)&m, sizeof(m));
+  Serial.printf("전송 %s  peak=%.2fg dur=%.0fms\n",
+                r == ESP_OK ? "OK" : "실패", peak_g, dur_ms);
+  delay(50);   // 전송 완료 대기
+}
+
+// ─── 충격 파형 측정 ────────────────────────────────────────────────
+
+void captureImpact(float &peak_g, float &dur_ms) {
+  const float TRIG_G = ACT_THRESHOLD * 0.0625f;
+  uint32_t t0 = millis();
+  uint32_t over_start = 0, over_total = 0;
+  peak_g = 0;
+
+  while (millis() - t0 < CAPTURE_MS) {
+    int16_t x, y, z;
+    adxlReadXYZ(x, y, z);
+    float mag = sqrtf(toG(x) * toG(x) + toG(y) * toG(y) + toG(z) * toG(z));
+    if (mag > peak_g) peak_g = mag;
+
+    if (mag >= TRIG_G) {
+      if (over_start == 0) over_start = millis();
+    } else if (over_start) {
+      over_total += millis() - over_start;
+      over_start = 0;
+    }
+    delay(5);
+  }
+  if (over_start) over_total += millis() - over_start;
+  dur_ms = over_total;
+}
+
+// ─── 메인 ─────────────────────────────────────────────────────────
+
+void setup() {
+  Serial.begin(115200);
+  delay(DEBUG_MODE ? 1500 : 200);
+
+  boot_count++;
+  pinMode(PIN_INT1, INPUT);
+  Wire.begin();
+
+  if (!adxlBegin()) {
+    Serial.println("센서 초기화 실패 — 10초 후 재시도");
+    delay(10000);
+    ESP.restart();
+  }
+
+  Serial.printf("\n부팅 #%lu  (원인: %d)\n", boot_count, esp_sleep_get_wakeup_cause());
+  Serial.print("내 MAC: "); Serial.println(WiFi.macAddress());
+
+  if (DEBUG_MODE) {
+    Serial.println("\n[DEBUG] 딥슬립 없이 가속도를 계속 출력합니다.");
+    Serial.println("바닥을 두드리거나 물건을 떨어뜨려 보세요.");
+    Serial.println("여기서 본 값으로 ACT_THRESHOLD 를 정한 뒤 DEBUG_MODE 를 0 으로.\n");
+    espnowBegin();
+    return;
+  }
+
+  // ── 실사용 경로 ──
+  espnowBegin();
+
+  bool woke_by_int = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO);
+  if (woke_by_int || boot_count == 1) {
+    float peak, dur;
+    captureImpact(peak, dur);
+    if (peak >= ACT_THRESHOLD * 0.0625f) {
+      sendImpact(peak, dur);
+    } else {
+      Serial.printf("임계 미달 (peak=%.2fg) — 전송 안 함\n", peak);
+    }
+  }
+
+  adxlRead(REG_INT_SOURCE);   // 인터럽트 래치 해제
+
+  Serial.println("딥슬립 진입\n");
+  Serial.flush();
+  esp_deep_sleep_enable_gpio_wakeup(BIT(PIN_INT1), ESP_GPIO_WAKEUP_GPIO_HIGH);
+  esp_deep_sleep_start();
+}
+
+void loop() {
+  if (!DEBUG_MODE) return;   // 실사용 경로는 setup 에서 잠든다
+
+  static uint32_t last_send = 0;
+  int16_t x, y, z;
+  adxlReadXYZ(x, y, z);
+  float gx = toG(x), gy = toG(y), gz = toG(z);
+  float mag = sqrtf(gx * gx + gy * gy + gz * gz);
+  bool over = mag >= ACT_THRESHOLD * 0.0625f;
+
+  Serial.printf("x=%+6.2f y=%+6.2f z=%+6.2f  |mag|=%5.2fg  INT1=%d %s\n",
+                gx, gy, gz, mag, digitalRead(PIN_INT1), over ? "<<< 충격" : "");
+
+  if (over && millis() - last_send > 2000) {
+    last_send = millis();
+    sendImpact(mag, 0);
+  }
+  delay(100);
+}

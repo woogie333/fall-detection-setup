@@ -60,6 +60,9 @@ chmod +x scripts/setup_rdk.sh
 | [`scripts/web_view.py`](scripts/web_view.py) | AI 판정 화면(HUD)을 브라우저로 스트리밍 |
 | [`scripts/smartthings_notifier.py`](scripts/smartthings_notifier.py) | 알림 전송 모듈 (융합 로직에서 import) |
 | [`scripts/test_notify.py`](scripts/test_notify.py) | SmartThings 연동 테스트 |
+| [`scripts/ld2450.py`](scripts/ld2450.py) | LD2450 프로토콜 파서 (import 용) |
+| [`scripts/ld2450_test.py`](scripts/ld2450_test.py) | LD2450 테스트 · 브라우저 평면도 |
+| [`scripts/impact_test.py`](scripts/impact_test.py) | 무선 진동센서 수신 테스트 |
 
 ### camera_test.py
 
@@ -67,6 +70,15 @@ chmod +x scripts/setup_rdk.sh
 python3 scripts/camera_test.py --info              # 장치·포맷 조회
 python3 scripts/camera_test.py -d 9 --raw --stream # Lepton Y16
 # → 브라우저에서 http://<보드IP>:8090
+```
+
+### ld2450_test.py
+
+```bash
+python3 scripts/ld2450_test.py --list                    # 포트 확인
+python3 scripts/ld2450_test.py -p /dev/ttyUSB0 --raw     # 배선 점검
+python3 scripts/ld2450_test.py -p /dev/ttyUSB0 --web     # 평면도
+# → http://<보드IP>:8091
 ```
 
 ### web_view.py
@@ -95,6 +107,7 @@ python3 web_view.py --camera 9 --y16 --thr 0.4
 | [06-purchase-list.md](docs/06-purchase-list.md) | 디바이스마트 구매 목록 (가격 포함) |
 | [07-bom-review.md](docs/07-bom-review.md) | 부품 재점검 — 누락·정정 사항 |
 | [08-bom-no-solder.md](docs/08-bom-no-solder.md) | 납땜 없는 구성 대안 |
+| [09-sensors.md](docs/09-sensors.md) | **LD2450 · 진동센서 연결과 테스트** |
 | [enclosure_sketch.html](docs/enclosure_sketch.html) | 케이스 형태 스케치 (브라우저로 열기) |
 
 ---
@@ -130,6 +143,16 @@ sudo systemctl daemon-reload && sudo systemctl enable --now edgebridge
 VNC와 감지 서비스 유닛은 [01-setup.md](docs/01-setup.md)에 붙여넣기용 블록으로 있습니다.
 
 ---
+
+## 펌웨어
+
+| 파일 | 용도 |
+|---|---|
+| [`firmware/receiver/receiver.ino`](firmware/receiver/receiver.ino) | ESP-NOW 수신기 (RDK X3 에 USB 연결) |
+| [`firmware/sensor_node/sensor_node.ino`](firmware/sensor_node/sensor_node.ino) | 바닥 진동센서 노드 (배터리 구동) |
+
+**수신기를 먼저 올려** 시리얼에 찍히는 MAC 을 `sensor_node.ino` 의 `RECEIVER_MAC` 에
+넣으세요. 자세한 순서는 [09-sensors.md](docs/09-sensors.md).
 
 ## 하드웨어
 
