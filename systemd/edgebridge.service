@@ -1,0 +1,28 @@
+[Unit]
+Description=SmartThings edgebridge forwarding server
+Documentation=https://github.com/toddaustin07/edgebridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ── 아래 3줄은 실제 환경에 맞게 수정하세요 ──────────────────────
+User=sunrise
+WorkingDirectory=/home/sunrise/edgebridge
+ExecStart=/usr/bin/python3 /home/sunrise/edgebridge/edgebridge.py
+# ───────────────────────────────────────────────────────────
+
+Restart=always
+RestartSec=10
+
+# 네트워크가 늦게 올라오거나 일시적으로 끊겨도 계속 재시도한다.
+# 낙상 알림 경로라 죽은 채로 방치되면 안 된다.
+StartLimitIntervalSec=0
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgebridge
+
+[Install]
+WantedBy=multi-user.target

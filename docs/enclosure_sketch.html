@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>낙상 감지 시스템 — 케이스 형태 제안</title>
+<style>
+  :root{
+    --bg:#fbfbfa; --panel:#fff; --ink:#1c1b19; --muted:#6b6862;
+    --line:#e3e0da; --accent:#3d6b8e; --warn:#a8543a; --ok:#4a7c59;
+    --dim:#9a968e;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#16151a; --panel:#1e1d23; --ink:#e8e6e1; --muted:#a09c95;
+           --line:#32303a; --accent:#7aa9cc; --warn:#d98b6e;
+           --ok:#7fb08c; --dim:#6e6a66; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+       line-height:1.65;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:26px;font-weight:650;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 36px}
+  h2{font-size:19px;font-weight:620;margin:44px 0 4px;letter-spacing:-.01em}
+  h2 .tag{font-size:12px;font-weight:500;color:var(--muted);margin-left:8px}
+  .note{color:var(--muted);font-size:14px;margin:0 0 18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:22px;margin:18px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .cap{font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px}
+  svg{display:block;width:100%;height:auto}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin:14px 0}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{font-weight:600;color:var(--muted);font-size:12.5px;
+     text-transform:uppercase;letter-spacing:.04em}
+  td.num{font-variant-numeric:tabular-nums}
+  .flag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:4px;
+        background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn);
+        font-weight:600}
+  .callout{border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 7%,transparent);
+           padding:14px 18px;border-radius:0 8px 8px 0;margin:18px 0;font-size:14.5px}
+  .callout.good{border-color:var(--ok);background:color-mix(in srgb,var(--ok) 8%,transparent)}
+  .callout b{font-weight:640}
+  ul{padding-left:20px;margin:10px 0}
+  li{margin:5px 0;font-size:14.5px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);
+          margin-top:14px;justify-content:center}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;
+            margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>낙상 감지 시스템 — 케이스 형태 제안</h1>
+  <p class="sub">모델링 시작 전 참고용 배치안. 치수는 확인된 값만 기재했으며,
+     <span class="flag">미확인</span> 항목은 실측 후 확정하세요.</p>
+
+  <div class="callout">
+    <b>가장 중요한 제약 — Lepton 앞은 반드시 뚫려 있어야 합니다.</b><br>
+    장파장 적외선(8~14 µm)은 플라스틱·아크릴·유리를 완전히 차단합니다.
+    투명 커버를 씌우면 아무것도 보이지 않습니다. 개구부를 뚫고 렌즈를 그 위치에 맞추세요.
+  </div>
+
+  <div class="callout good">
+    <b>반대로 LD2450은 덮어야 정상입니다.</b><br>
+    24GHz는 플라스틱을 통과하므로 케이스 안에 숨깁니다. 단, 커버 두께는
+    ABS 기준 <b>3.92 mm</b>(반파장의 정수배) 또는 1 mm 미만으로. 어중간한 2 mm가 가장 나쁩니다.
+    레이더 전면에 금속(나사·도전성 필라멘트)이 있으면 안 됩니다.
+  </div>
+
+  <!-- ===================== 메인 유닛 ===================== -->
+  <h2>메인 유닛 <span class="tag">벽걸이 · 세로형</span></h2>
+  <p class="note">RDK X3를 눕히고 전면에 두 센서를 세로로 배치. 설치 높이 1.5~2 m.</p>
+
+  <div class="grid">
+    <div class="card">
+      <svg viewBox="0 0 320 400" role="img" aria-label="메인 유닛 정면도">
+        <!-- 케이스 외곽 -->
+        <rect x="45" y="30" width="230" height="330" rx="14"
+              fill="none" stroke="currentColor" stroke-width="2.2" opacity=".85"/>
+
+        <!-- Lepton 개구부 -->
+        <circle cx="160" cy="100" r="26" fill="none" stroke="#a8543a" stroke-width="2.5"/>
+        <circle cx="160" cy="100" r="16" fill="#a8543a" opacity=".18"/>
+        <circle cx="160" cy="100" r="16" fill="none" stroke="#a8543a" stroke-width="1.5"
+                stroke-dasharray="3 3"/>
+        <text x="160" y="104" text-anchor="middle" font-size="9.5" fill="#a8543a"
+              font-weight="700">뚫림</text>
+        <text x="160" y="152" text-anchor="middle" font-size="11" fill="currentColor"
+              opacity=".7">Lepton 개구부</text>
+        <text x="160" y="166" text-anchor="middle" font-size="9.5" fill="currentColor"
+              opacity=".45">커버 금지 · 카운터싱크</text>
+
+        <!-- LD2450 영역 (덮개 아래) -->
+        <rect x="122" y="200" width="76" height="120" rx="7"
+              fill="#3d6b8e" opacity=".13"/>
+        <rect x="122" y="200" width="76" height="120" rx="7"
+              fill="none" stroke="#3d6b8e" stroke-width="2" stroke-dasharray="5 4"/>
+        <text x="160" y="252" text-anchor="middle" font-size="11" fill="#3d6b8e"
+              font-weight="650">LD2450</text>
+        <text x="160" y="268" text-anchor="middle" font-size="9.5" fill="#3d6b8e"
+              opacity=".8">15 × 44 mm</text>
+        <text x="160" y="284" text-anchor="middle" font-size="9.5" fill="#3d6b8e"
+              opacity=".8">덮개 안쪽</text>
+
+        <!-- 치수선 -->
+        <line x1="45" y1="378" x2="275" y2="378" stroke="currentColor"
+              stroke-width="1" opacity=".4"/>
+        <line x1="45" y1="372" x2="45" y2="384" stroke="currentColor" stroke-width="1" opacity=".4"/>
+        <line x1="275" y1="372" x2="275" y2="384" stroke="currentColor" stroke-width="1" opacity=".4"/>
+        <text x="160" y="394" text-anchor="middle" font-size="10.5" fill="currentColor"
+              opacity=".55">약 100 mm (RDK X3 폭 85 + 여유)</text>
+
+        <line x1="292" y1="30" x2="292" y2="360" stroke="currentColor"
+              stroke-width="1" opacity=".4"/>
+        <text x="305" y="200" font-size="10.5" fill="currentColor" opacity=".55"
+              transform="rotate(90 305 200)" text-anchor="middle">약 150 mm</text>
+      </svg>
+      <p class="cap">정면도 — 개구부(뚫림)와 레이더 영역(덮개)의 구분</p>
+    </div>
+
+    <div class="card">
+      <svg viewBox="0 0 320 400" role="img" aria-label="메인 유닛 측면도">
+        <!-- 벽 -->
+        <line x1="52" y1="25" x2="52" y2="365" stroke="currentColor"
+              stroke-width="3" opacity=".3"/>
+        <text x="34" y="200" font-size="10.5" fill="currentColor" opacity=".45"
+              transform="rotate(-90 34 200)" text-anchor="middle">벽면</text>
+
+        <!-- 케이스 (아래로 기울어짐) -->
+        <g transform="rotate(12 160 195)">
+          <rect x="70" y="55" width="150" height="280" rx="12"
+                fill="none" stroke="currentColor" stroke-width="2.2" opacity=".85"/>
+          <!-- RDK X3 -->
+          <rect x="84" y="150" width="120" height="26" rx="3"
+                fill="#4a7c59" opacity=".2"/>
+          <rect x="84" y="150" width="120" height="26" rx="3"
+                fill="none" stroke="#4a7c59" stroke-width="1.6"/>
+          <text x="144" y="167" text-anchor="middle" font-size="10" fill="#4a7c59"
+                font-weight="650">RDK X3 · 85×56×20</text>
+          <!-- 방열판 -->
+          <rect x="112" y="132" width="60" height="16" rx="2"
+                fill="none" stroke="currentColor" stroke-width="1.2"
+                stroke-dasharray="3 2" opacity=".5"/>
+          <text x="142" y="127" text-anchor="middle" font-size="9" fill="currentColor"
+                opacity=".5">방열판 공간</text>
+          <!-- 센서 -->
+          <rect x="196" y="72" width="12" height="30" rx="2" fill="#a8543a" opacity=".55"/>
+          <rect x="196" y="230" width="12" height="50" rx="2" fill="#3d6b8e" opacity=".5"/>
+          <!-- 통풍구 -->
+          <g opacity=".4" stroke="currentColor" stroke-width="1.4">
+            <line x1="92" y1="300" x2="112" y2="300"/>
+            <line x1="92" y1="310" x2="112" y2="310"/>
+            <line x1="92" y1="320" x2="112" y2="320"/>
+          </g>
+        </g>
+
+        <!-- 화각 -->
+        <path d="M 232 95 L 300 150 M 232 95 L 292 45" stroke="#a8543a"
+              stroke-width="1.3" stroke-dasharray="4 3" opacity=".65" fill="none"/>
+        <text x="290" y="105" font-size="10" fill="#a8543a" opacity=".8">56°</text>
+
+        <text x="160" y="384" text-anchor="middle" font-size="10.5"
+              fill="currentColor" opacity=".55">아래로 10~20° 기울임 (각도 조절 브래킷 권장)</text>
+      </svg>
+      <p class="cap">측면도 — 바닥이 화각에 들어오도록 하향 경사</p>
+    </div>
+  </div>
+
+  <ul>
+    <li>두 센서는 <b>같은 방향</b>을 보게 나란히. 좌표 정합이 쉬워집니다.</li>
+    <li>통풍구는 Lepton 개구부에서 멀리. 내부 열이 열화상에 잡힙니다.</li>
+    <li>USB-C(5V 3A) 접근구 필수. 전력 부족 시 캡처 중 리부팅됩니다.</li>
+  </ul>
+
+  <!-- ===================== 센서 노드 ===================== -->
+  <h2>진동센서 노드 <span class="tag">바닥 밀착 · 납작형</span></h2>
+  <p class="note">발에 걸리지 않도록 최대한 낮게. 바닥과의 강한 결합이 성능을 좌우합니다.</p>
+
+  <div class="grid">
+    <div class="card">
+      <svg viewBox="0 0 320 260" role="img" aria-label="센서 노드 평면도">
+        <rect x="30" y="35" width="260" height="170" rx="16"
+              fill="none" stroke="currentColor" stroke-width="2.2" opacity=".85"/>
+
+        <!-- 배터리 -->
+        <rect x="48" y="55" width="130" height="90" rx="5"
+              fill="#3d6b8e" opacity=".14"/>
+        <rect x="48" y="55" width="130" height="90" rx="5"
+              fill="none" stroke="#3d6b8e" stroke-width="1.8"/>
+        <text x="113" y="96" text-anchor="middle" font-size="11" fill="#3d6b8e"
+              font-weight="650">LiPo 1000mAh</text>
+        <text x="113" y="112" text-anchor="middle" font-size="9.5" fill="#3d6b8e"
+              opacity=".8">50 × 34 × 5</text>
+
+        <!-- XIAO -->
+        <rect x="196" y="55" width="56" height="48" rx="4"
+              fill="#4a7c59" opacity=".18"/>
+        <rect x="196" y="55" width="56" height="48" rx="4"
+              fill="none" stroke="#4a7c59" stroke-width="1.8"/>
+        <text x="224" y="76" text-anchor="middle" font-size="9.5" fill="#4a7c59"
+              font-weight="650">XIAO</text>
+        <text x="224" y="90" text-anchor="middle" font-size="9" fill="#4a7c59"
+              opacity=".8">20×17.5</text>
+
+        <!-- ADXL345 -->
+        <rect x="196" y="115" width="56" height="46" rx="4"
+              fill="#a8543a" opacity=".18"/>
+        <rect x="196" y="115" width="56" height="46" rx="4"
+              fill="none" stroke="#a8543a" stroke-width="1.8"/>
+        <text x="224" y="135" text-anchor="middle" font-size="9.5" fill="#a8543a"
+              font-weight="650">ADXL345</text>
+        <text x="224" y="149" text-anchor="middle" font-size="9" fill="#a8543a"
+              opacity=".8">20.4×15.8</text>
+
+        <!-- USB 포트 -->
+        <rect x="140" y="199" width="26" height="10" rx="2"
+              fill="currentColor" opacity=".35"/>
+        <text x="153" y="226" text-anchor="middle" font-size="9.5"
+              fill="currentColor" opacity=".5">USB-C (충전)</text>
+
+        <!-- 치수 -->
+        <line x1="30" y1="24" x2="290" y2="24" stroke="currentColor"
+              stroke-width="1" opacity=".4"/>
+        <text x="160" y="17" text-anchor="middle" font-size="10.5"
+              fill="currentColor" opacity=".55">약 90 mm</text>
+      </svg>
+      <p class="cap">평면도 — 배터리가 면적의 대부분을 차지</p>
+    </div>
+
+    <div class="card">
+      <svg viewBox="0 0 320 260" role="img" aria-label="센서 노드 측면도">
+        <!-- 바닥 -->
+        <line x1="20" y1="185" x2="300" y2="185" stroke="currentColor"
+              stroke-width="3" opacity=".35"/>
+        <g opacity=".25" stroke="currentColor" stroke-width="1.2">
+          <line x1="30" y1="185" x2="20" y2="197"/>
+          <line x1="60" y1="185" x2="50" y2="197"/>
+          <line x1="90" y1="185" x2="80" y2="197"/>
+          <line x1="120" y1="185" x2="110" y2="197"/>
+          <line x1="150" y1="185" x2="140" y2="197"/>
+          <line x1="180" y1="185" x2="170" y2="197"/>
+          <line x1="210" y1="185" x2="200" y2="197"/>
+          <line x1="240" y1="185" x2="230" y2="197"/>
+          <line x1="270" y1="185" x2="260" y2="197"/>
+          <line x1="300" y1="185" x2="290" y2="197"/>
+        </g>
+        <text x="160" y="212" text-anchor="middle" font-size="10.5"
+              fill="currentColor" opacity=".5">바닥 (마루/장판)</text>
+
+        <!-- 접착층 -->
+        <rect x="55" y="180" width="210" height="5" fill="#a8543a" opacity=".45"/>
+        <text x="285" y="178" font-size="9.5" fill="#a8543a" opacity=".9"
+              text-anchor="end">VHB 양면테이프</text>
+
+        <!-- 케이스 -->
+        <rect x="55" y="132" width="210" height="48" rx="7"
+              fill="none" stroke="currentColor" stroke-width="2.2" opacity=".85"/>
+
+        <!-- 내부 -->
+        <rect x="68" y="152" width="100" height="22" rx="2"
+              fill="#3d6b8e" opacity=".25"/>
+        <text x="118" y="167" text-anchor="middle" font-size="9" fill="#3d6b8e">배터리 5mm</text>
+
+        <rect x="182" y="140" width="46" height="12" rx="2" fill="#4a7c59" opacity=".3"/>
+        <rect x="182" y="162" width="46" height="12" rx="2" fill="#a8543a" opacity=".35"/>
+        <text x="248" y="149" font-size="8.5" fill="#4a7c59">XIAO</text>
+        <text x="248" y="171" font-size="8.5" fill="#a8543a">ADXL</text>
+
+        <!-- ADXL 고정 강조 -->
+        <path d="M 205 174 L 205 180" stroke="#a8543a" stroke-width="2.5"/>
+        <text x="205" y="128" text-anchor="middle" font-size="9.5" fill="#a8543a"
+              font-weight="650">바닥면에 직결</text>
+
+        <!-- 높이 치수 -->
+        <line x1="40" y1="132" x2="40" y2="185" stroke="currentColor"
+              stroke-width="1" opacity=".4"/>
+        <line x1="34" y1="132" x2="46" y2="132" stroke="currentColor" stroke-width="1" opacity=".4"/>
+        <line x1="34" y1="185" x2="46" y2="185" stroke="currentColor" stroke-width="1" opacity=".4"/>
+        <text x="22" y="162" font-size="10.5" fill="currentColor" opacity=".55"
+              transform="rotate(-90 22 162)" text-anchor="middle">12~15 mm</text>
+
+        <text x="160" y="242" text-anchor="middle" font-size="10"
+              fill="currentColor" opacity=".5">고무발·스탠드오프 금지 — 진동이 감쇠됩니다</text>
+      </svg>
+      <p class="cap">측면도 — 바닥면 직접 접착이 핵심</p>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:#a8543a"></i>열화상 / 가속도 (개구·결합 중요)</span>
+    <span><i style="background:#3d6b8e"></i>레이더 / 배터리</span>
+    <span><i style="background:#4a7c59"></i>연산 보드</span>
+  </div>
+
+  <!-- ===================== 치수표 ===================== -->
+  <h2>부품 치수 요약</h2>
+
+  <table>
+    <thead>
+      <tr><th>부품</th><th>치수 (mm)</th><th>마운트 홀</th><th>비고</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>RDK X3</td><td class="num">85 × 56 × 20</td>
+          <td><span class="flag">미확인</span></td><td>라즈베리파이 B 폼팩터</td></tr>
+      <tr><td>PureThermal 2</td><td class="num">30 × 18</td>
+          <td><span class="flag">미확인</span> 4개</td><td>Micro-USB</td></tr>
+      <tr><td>HLK-LD2450</td><td class="num">15 × 44</td>
+          <td><span class="flag">미확인</span></td><td>UART 4핀, 5V 120mA</td></tr>
+      <tr><td>XIAO ESP32C3</td><td class="num">20 × 17.5</td>
+          <td>—</td><td>배터리 충전 내장</td></tr>
+      <tr><td>ADXL345 (GY-291)</td><td class="num">20.4 × 15.8</td>
+          <td class="num">2개 / 간격 15</td><td>벤더별 편차 있음</td></tr>
+      <tr><td>LiPo 503450</td><td class="num">50 × 34 × 5</td>
+          <td>—</td><td>제품별 두께 편차</td></tr>
+    </tbody>
+  </table>
+
+  <table>
+    <thead>
+      <tr><th>광학 · 전파</th><th>값</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Lepton 3.0 해상도</td><td class="num">160 × 120</td></tr>
+      <tr><td>Lepton 3.0 HFOV</td><td class="num">56° (대각 71°)</td></tr>
+      <tr><td>Lepton 3.0 VFOV</td><td><span class="flag">미확인</span> 데이터시트 미기재</td></tr>
+      <tr><td>LD2450 화각</td><td class="num">±60° 수평 / ±35° 수직</td></tr>
+      <tr><td>LD2450 최대 거리</td><td class="num">6 m</td></tr>
+      <tr><td>권장 설치 높이</td><td class="num">1.5 ~ 2 m</td></tr>
+    </tbody>
+  </table>
+
+  <h2>모델링 전 실측 목록</h2>
+  <p class="note">STEP 파일이 없어 확인 못 한 항목들입니다. 부품이 오면 캘리퍼로 재두세요.</p>
+  <ul>
+    <li>RDK X3 마운트 홀 4개의 위치와 지름</li>
+    <li>PureThermal 2 홀 간격, <b>Lepton 렌즈 중심 위치와 렌즈 지름</b></li>
+    <li>LD2450 홀 간격과 지름</li>
+    <li>커넥터별 PCB 바닥면으로부터의 높이 (USB-C, HDMI, RJ45)</li>
+    <li>실제 배터리 두께</li>
+  </ul>
+
+  <div class="callout">
+    <b>출력 전 검증.</b> 전체를 뽑기 전에 마운트 홀 부분만 잘라 시험 출력하세요.
+    프린터 수축률 때문에 홀이 작게 나오는 일이 흔합니다.
+  </div>
+
+</div>
+</body>
+</html>

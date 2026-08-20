@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 실행 산출물
+alarms/
+cache/
+*.log
+*.jpg
+*.png
+!docs/**/*.png
+
+# OS
+.DS_Store
