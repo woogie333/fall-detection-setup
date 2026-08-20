@@ -66,6 +66,69 @@ def fix_frame(frame):
     return a
 
 
+def open_lepton(idx, y16, warmup=2.0):
+    """카메라를 직접 연다.
+
+    lepton_live 의 camera_source 는 여러 백엔드를 돌아가며 열어보는데,
+    PureThermal 에서는 이 과정이 스트림 협상을 망가뜨려 select() timeout 이
+    반복되는 경우가 있다. 여기서는 V4L2 로 한 번만, 해상도까지 명시해서 연다.
+    (Y16 에는 160x120 과 160x122 두 가지가 있어 명시하지 않으면 엉뚱한 쪽이
+    잡힐 수 있다.)
+    """
+    cap = cv2.VideoCapture(int(idx), cv2.CAP_V4L2)
+    if not cap.isOpened():
+        raise RuntimeError(f"/dev/video{idx} 를 열 수 없습니다")
+
+    if y16:
+        # 해상도는 건드리지 않는다. PureThermal 은 Y16 을 160x122 로 내보내며
+        # (아래 2줄은 텔레메트리), 여기서 160x120 을 강제하면 협상이 깨져
+        # select() timeout 이 난다. 형태 교정은 fix_frame 이 담당한다.
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"Y16 "))
+    else:
+        cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+
+    # Lepton 은 첫 프레임까지 시간이 걸린다. 몇 장 버리며 안정화를 기다린다.
+    deadline = time.time() + warmup
+    got = False
+    while time.time() < deadline:
+        ok, fr = cap.read()
+        if ok and fr is not None:
+            got = True
+            break
+        time.sleep(0.05)
+    if not got:
+        cap.release()
+        raise RuntimeError(
+            f"/dev/video{idx} 에서 프레임을 못 받았습니다.\n"
+            f"  - PureThermal 을 뽑았다 다시 꽂아보세요\n"
+            f"  - v4l2-ctl --list-devices 로 인덱스를 다시 확인하세요\n"
+            f"  - --y16 옵션 유무를 반대로 해보세요"
+        )
+    print(f"  카메라 열림: /dev/video{idx}  frame={np.asarray(fr).shape}")
+    return cap
+
+
+def lepton_frames(idx, y16):
+    """lepton_live.camera_source 를 대체하는 제너레이터."""
+    cap = open_lepton(idx, y16)
+    fails = 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                fails += 1
+                if fails > 200:
+                    print("  프레임을 계속 못 읽어 종료합니다.")
+                    return
+                time.sleep(0.02)
+                continue
+            fails = 0
+            yield frame
+    finally:
+        cap.release()
+
+
 # ---------------------------------------------------------------- 프레임 허브
 
 class FrameHub:
@@ -158,6 +221,9 @@ def main() -> int:
     # --web-port 만 여기서 처리하고 나머지 인자는 lepton_live 로 그대로 넘긴다.
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--web-port", type=int, default=8090)
+    pre.add_argument("--orig-camera", action="store_true",
+                     help="lepton_live 의 원래 카메라 열기 방식을 사용 "
+                          "(기본은 web_view 의 단순·명시적 방식)")
     known, rest = pre.parse_known_args()
 
     if "--display" not in rest:
@@ -200,6 +266,11 @@ def main() -> int:
         return _orig_frame_to_gray(fixed, y16)
 
     lepton_live.frame_to_gray = _patched
+
+    # PureThermal 에서 lepton_live 의 다중 백엔드 탐색이 select() timeout 을
+    # 유발하는 경우가 있어, 카메라 열기도 우리 구현으로 교체한다.
+    if not known.orig_camera:
+        lepton_live.camera_source = lepton_frames
 
     try:
         lepton_live.main()
