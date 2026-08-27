@@ -66,7 +66,9 @@ const uint8_t ADXL_ADDR  = 0x53;   // SDO=GND
 // 2.0g 는 망치로 쳐야 나오는 값이라 실제 낙상을 통째로 놓친다.
 // 너무 낮으면 발소리에도 깨어나 배터리를 갉아먹으므로, DEBUG_MODE 로
 // 실제 낙상 값을 재본 뒤 그 절반쯤으로 잡으세요.
-const uint8_t ACT_THRESHOLD = 8;
+// 실측(2026-08): 정지 시 노이즈 peak 0.08~0.10g, 손으로 친 충격 0.86g.
+// 5 = 0.31g → 노이즈의 3배. 이보다 낮추면 발소리에도 깨어난다.
+const uint8_t ACT_THRESHOLD = 5;
 
 const uint16_t CAPTURE_MS = 400;   // 깨어난 뒤 파형을 볼 시간
 const char*    DEVICE_ID  = "vib-01";
@@ -101,6 +103,12 @@ typedef struct __attribute__((packed)) {
 } ImpactMsg;
 
 RTC_DATA_ATTR uint32_t boot_count = 0;   // 딥슬립을 넘어 유지된다
+
+// 정지 상태의 실측 중력 크기. 센서마다 오프셋이 있어 1.00g 가 아니다
+// (실측 예: 0.94g). 고정값 1.0 을 빼면 가만히 둬도 0.06g 가 깔린다.
+// 첫 부팅 때 한 번 재고 딥슬립을 넘어 계속 쓴다 — 충격으로 깨어난 직후에
+// 다시 재면 흔들리는 값을 기준선으로 삼게 된다.
+RTC_DATA_ATTR float g_baseline = 1.0f;
 
 // ─── I2C 헬퍼 ─────────────────────────────────────────────────────
 
@@ -159,6 +167,20 @@ bool adxlBegin() {
 
   adxlWrite(REG_POWER_CTL, 0x08);      // 측정 시작
   return true;
+}
+
+// 정지 상태 기준선 측정. 노드를 가만히 둔 상태에서 불러야 한다.
+void measureBaseline() {
+  double sum = 0; uint32_t n = 0;
+  uint32_t t_end = millis() + 300;
+  while (millis() < t_end) {
+    int16_t x, y, z;
+    adxlReadXYZ(x, y, z);
+    sum += sqrtf(toG(x) * toG(x) + toG(y) * toG(y) + toG(z) * toG(z));
+    n++;
+  }
+  if (n) g_baseline = sum / n;
+  Serial.printf("기준선(정지 시 중력) = %.3fg\n", g_baseline);
 }
 
 // ─── ESP-NOW ───────────────────────────────────────────────────────
@@ -281,7 +303,7 @@ void captureImpact(float &peak_g, float &dur_ms) {
     // 중력을 뺀 **변화량**을 본다. 가만히 있으면 0 근처, 충격이 오면 튄다.
     // 예전처럼 절대 크기를 쓰면 정지 상태에서도 1.0g 라 임계값이 왜곡된다.
     float mag = fabsf(sqrtf(toG(x) * toG(x) + toG(y) * toG(y)
-                            + toG(z) * toG(z)) - 1.0f);
+                            + toG(z) * toG(z)) - g_baseline);
     if (mag > peak_g) peak_g = mag;
 
     if (mag >= TRIG_G) {
@@ -312,6 +334,13 @@ void setup() {
     delay(10000);
     ESP.restart();
   }
+
+  // 첫 부팅에서만 기준선을 잰다. 충격으로 깨어난 뒤엔 이미 흔들리고 있다.
+  if (boot_count == 1) measureBaseline();
+
+  // ⚠ 인터럽트 래치 해제. 이걸 안 하면 INT1 이 HIGH 로 고정되고,
+  // 딥슬립에 들어가자마자 즉시 깨어나는 무한 루프가 되어 배터리가 나간다.
+  adxlRead(REG_INT_SOURCE);
 
   Serial.printf("\n부팅 #%lu  (원인: %d)\n", boot_count, esp_sleep_get_wakeup_cause());
   Serial.print("내 MAC: "); Serial.println(WiFi.macAddress());
@@ -362,13 +391,17 @@ void loop() {
     int16_t x, y, z;
     adxlReadXYZ(x, y, z);
     gx = toG(x); gy = toG(y); gz = toG(z);
-    float m = fabsf(sqrtf(gx * gx + gy * gy + gz * gz) - 1.0f);   // 중력 제외
+    float m = fabsf(sqrtf(gx * gx + gy * gy + gz * gz) - g_baseline);  // 중력 제외
     if (m > peak) peak = m;
     samples++;
   }
 
   const float TRIG_G = ACT_THRESHOLD * 0.0625f;
   bool over = peak >= TRIG_G;
+
+  // 래치를 매번 풀어준다. 안 풀면 INT1 이 계속 1 로 보여
+  // 인터럽트가 실제로 뜨는지 확인할 수 없다.
+  adxlRead(REG_INT_SOURCE);
 
   char bar[41];
   int blen = (int)(peak * 20);   // 0.5g 가 10칸
