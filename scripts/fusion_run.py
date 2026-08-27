@@ -41,7 +41,7 @@ import sys
 import threading
 import time
 from collections import deque
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
 import numpy as np
@@ -617,7 +617,10 @@ def main() -> int:
     cv2.destroyAllWindows = lambda: None
     cv2.namedWindow = lambda *a, **k: None
 
-    server = HTTPServer(("0.0.0.0", known.web_port), Handler)
+    # ThreadingHTTPServer 여야 한다. 단일 스레드면 MJPEG 스트림이 스레드를
+    # 영원히 붙잡아 /status 폴링과 버튼(POST)이 처리되지 않는다.
+    server = ThreadingHTTPServer(("0.0.0.0", known.web_port), Handler)
+    server.daemon_threads = True
     server.cfg = {"bridge": known.bridge, "device": known.device}
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
