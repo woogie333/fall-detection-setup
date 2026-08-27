@@ -202,6 +202,37 @@ def send_to_bridge(bridge: str, device: str) -> bool:
         return False
 
 
+def ping_bridge(bridge: str) -> tuple[bool, str]:
+    """edgebridge 가 살아 있는지만 확인한다. 기기를 트리거하지 않는다."""
+    import urllib.request, urllib.error
+    try:
+        with urllib.request.urlopen(f"http://{bridge}/", timeout=3) as r:
+            return True, f"응답 {r.status}"
+    except urllib.error.HTTPError as e:
+        # 루트 경로는 404 를 주는 게 정상 — 서버가 살아 있다는 뜻
+        return True, f"응답 {e.code} (정상)"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def manual_test(bridge: str | None, device: str) -> dict:
+    """대시보드의 테스트 버튼. 감지와 무관하게 알림을 한 번 보낸다."""
+    if not bridge:
+        STATE.note("error", "테스트 실패 — --bridge 가 지정되지 않았습니다")
+        return {"ok": False, "msg": "--bridge 미지정"}
+
+    STATE.note("info", "수동 테스트 알림 전송")
+    ok = send_to_bridge(bridge, device)
+    with STATE.lock:
+        STATE.bridge_ok = ok
+        if ok:
+            STATE.alarms += 1
+            STATE.last_alarm_t = time.time()
+    STATE.note("alarm" if ok else "error",
+               "테스트 전송 성공 — 폰 알림을 확인하세요" if ok else "테스트 전송 실패")
+    return {"ok": ok, "msg": "전송됨" if ok else "실패"}
+
+
 def on_webhook(payload: dict, bridge: str | None, device: str) -> None:
     """lepton_live 의 백엔드 전송을 가로챈다.
 
@@ -305,6 +336,14 @@ li.impact{color:var(--acc)}
 li.hold{color:var(--warn)}
 li.error{color:var(--bad)}
 li.info{color:var(--dim)}
+.btn{flex:1;padding:9px 10px;border-radius:7px;border:1px solid var(--line);
+     background:#26242b;color:var(--ink);font-size:13px;font-weight:600;cursor:pointer;
+     font-family:inherit}
+.btn:hover{background:#302e37}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:rgba(217,112,102,.16);border-color:rgba(217,112,102,.4);color:var(--bad)}
+.btn-primary:hover{background:rgba(217,112,102,.26)}
+.btn:disabled{opacity:.5;cursor:default}
 </style></head><body>
 <div class="wrap">
   <div>
@@ -318,6 +357,14 @@ li.info{color:var(--dim)}
     <div class="card">
       <h2>상태</h2>
       <div id="stat"></div>
+    </div>
+    <div class="card">
+      <h2>SmartThings 점검</h2>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button id="ping" class="btn">연결 확인</button>
+        <button id="test" class="btn btn-primary">테스트 알림</button>
+      </div>
+      <p id="tres" style="font-size:12.5px;color:var(--dim);margin:0;min-height:18px"></p>
     </div>
     <div class="card">
       <h2>이벤트</h2>
@@ -360,6 +407,20 @@ async function tick(){
     ).join('') || '<li class="info">아직 이벤트 없음</li>';
   }catch(e){}
 }
+async function post(path, btn, label){
+  const el = document.getElementById('tres');
+  btn.disabled = true; el.textContent = label + ' 중...';
+  try{
+    const r = await (await fetch(path, {method:'POST'})).json();
+    el.textContent = (r.ok ? '✓ ' : '✗ ') + label + ': ' + r.msg;
+    el.style.color = r.ok ? 'var(--ok)' : 'var(--bad)';
+  }catch(e){
+    el.textContent = '✗ 요청 실패'; el.style.color = 'var(--bad)';
+  }
+  btn.disabled = false; tick();
+}
+document.getElementById('ping').onclick = e => post('/ping', e.target, '연결 확인');
+document.getElementById('test').onclick = e => post('/test', e.target, '테스트 알림');
 setInterval(tick, 1000); tick();
 </script></body></html>""".encode("utf-8")
 
@@ -399,6 +460,31 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(0.05)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def do_POST(self):
+        cfg = getattr(self.server, "cfg", {})
+        if self.path == "/test":
+            res = manual_test(cfg.get("bridge"), cfg.get("device", "falldetect"))
+        elif self.path == "/ping":
+            b = cfg.get("bridge")
+            if not b:
+                res = {"ok": False, "msg": "--bridge 미지정"}
+            else:
+                ok, msg = ping_bridge(b)
+                with STATE.lock:
+                    STATE.bridge_ok = ok
+                STATE.note("info" if ok else "error", f"edgebridge 연결 확인: {msg}")
+                res = {"ok": ok, "msg": msg}
+        else:
+            self.send_error(404)
+            return
+
+        body = json.dumps(res).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, *a):
         pass
@@ -532,6 +618,7 @@ def main() -> int:
     cv2.namedWindow = lambda *a, **k: None
 
     server = HTTPServer(("0.0.0.0", known.web_port), Handler)
+    server.cfg = {"bridge": known.bridge, "device": known.device}
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     print()
