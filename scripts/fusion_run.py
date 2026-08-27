@@ -18,9 +18,12 @@ lepton_live.py(experiment-bbox 브랜치)를 그대로 구동하되,
   # 진동센서까지 (수신기 XIAO 가 USB 로 꽂혀 있어야 함)
   python3 fusion_run.py --camera 9 --y16 --impact-port /dev/ttyACM0
 
-  # SmartThings 알림까지 — 전체 통합
+  # SmartThings 알림까지
   python3 fusion_run.py --camera 9 --y16 --impact-port /dev/ttyACM0 \
       --bridge 172.30.1.33:8088 --device falldetect
+
+  # 백엔드 서버는 기본으로 켜져 있다 (cherry-fall.duckdns.org).
+  # 다른 주소로 바꾸려면 --webhook <URL>, 끄려면 --webhook none
 
   # 진동 충격이 있어야만 알람 (오탐 최소화)
   python3 fusion_run.py ... --require-impact
@@ -79,6 +82,11 @@ class State:
         self.log: deque = deque(maxlen=40)
 
         self.bridge_ok: bool | None = None
+        self.backend_url: str | None = None
+        self.backend_ok: bool | None = None
+        self.backend_sent = 0
+        self.backend_fail = 0
+        self.seq = 100000            # 수동 테스트용 seq (실 감지와 겹치지 않게)
         self.started = time.time()
 
     def put_frame(self, img) -> None:
@@ -121,11 +129,19 @@ class State:
             "require_impact": self.require_impact,
             "fusion_window": self.fusion_window,
             "bridge_ok": self.bridge_ok,
+            "backend_url": self.backend_url,
+            "backend_ok": self.backend_ok,
+            "backend_sent": self.backend_sent,
+            "backend_fail": self.backend_fail,
             "log": log,
         }
 
 
 STATE: State | None = None
+
+# 백엔드 서버 기본 주소. --webhook 로 덮어쓸 수 있고,
+# --webhook none 을 주면 백엔드 전송을 끈다.
+DEFAULT_BACKEND = "https://cherry-fall.duckdns.org/api/device/data"
 
 
 # ──────────────────────────────────────────────────────────── 진동센서
@@ -202,6 +218,31 @@ def send_to_bridge(bridge: str, device: str) -> bool:
         return False
 
 
+def send_to_backend(payload: dict, retries: int = 0, backoff: float = 1.0) -> None:
+    """친구분 스키마 그대로 실제 백엔드 서버로 전송한다.
+
+    lepton_live 의 원본 post_json 을 그대로 쓰므로 재시도·백오프 동작이 같다.
+    (원본은 백그라운드 스레드에서 보내므로 여기서 블로킹되지 않는다.)
+    """
+    url = STATE.backend_url
+    if not url:
+        return
+    fn = getattr(STATE, "_orig_post_json", None)
+    if fn is None:
+        return
+    with STATE.lock:
+        STATE.backend_sent += 1
+    try:
+        fn(url, payload, retries=retries, backoff=backoff)
+        with STATE.lock:
+            STATE.backend_ok = True
+    except Exception as exc:
+        with STATE.lock:
+            STATE.backend_fail += 1
+            STATE.backend_ok = False
+        STATE.note("error", f"백엔드 전송 실패: {exc}")
+
+
 def ping_bridge(bridge: str) -> tuple[bool, str]:
     """edgebridge 가 살아 있는지만 확인한다. 기기를 트리거하지 않는다."""
     import urllib.request, urllib.error
@@ -215,25 +256,63 @@ def ping_bridge(bridge: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def manual_test(bridge: str | None, device: str) -> dict:
-    """대시보드의 테스트 버튼. 감지와 무관하게 알림을 한 번 보낸다."""
-    if not bridge:
-        STATE.note("error", "테스트 실패 — --bridge 가 지정되지 않았습니다")
-        return {"ok": False, "msg": "--bridge 미지정"}
-
-    STATE.note("info", "수동 테스트 알림 전송")
-    ok = send_to_bridge(bridge, device)
+def build_test_payload(device_id: str) -> dict | None:
+    """실제 감지와 동일한 형식의 DANGER 페이로드를 만든다."""
+    builder = getattr(STATE, "_build_payload", None)
+    if builder is None:
+        return None
+    now = time.time()
     with STATE.lock:
-        STATE.bridge_ok = ok
-        if ok:
-            STATE.alarms += 1
-            STATE.last_alarm_t = time.time()
-    STATE.note("alarm" if ok else "error",
-               "테스트 전송 성공 — 폰 알림을 확인하세요" if ok else "테스트 전송 실패")
-    return {"ok": ok, "msg": "전송됨" if ok else "실패"}
+        STATE.seq += 1
+        seq = STATE.seq
+    return builder(
+        device_id=device_id, seq=seq, now=now,
+        report_type="EVENT", event_type="DANGER",
+        sensor_health={"vibrator": "UNKNOWN", "radar": "UNKNOWN", "thermal": "OK"},
+        battery_pct=100, rssi=-55, uptime_sec=int(now - STATE.started),
+    )
 
 
-def on_webhook(payload: dict, bridge: str | None, device: str) -> None:
+def manual_test(bridge: str | None, device: str, device_id: str) -> dict:
+    """대시보드의 테스트 버튼.
+
+    감지와 무관하게 (1) SmartThings 트리거와 (2) 백엔드 DANGER JSON 을
+    실제 낙상과 똑같이 한 번 내보낸다.
+    """
+    parts, ok_any = [], False
+
+    # 1) SmartThings
+    if bridge:
+        ok = send_to_bridge(bridge, device)
+        with STATE.lock:
+            STATE.bridge_ok = ok
+            if ok:
+                STATE.alarms += 1
+                STATE.last_alarm_t = time.time()
+        parts.append("SmartThings " + ("성공" if ok else "실패"))
+        ok_any = ok_any or ok
+    else:
+        parts.append("SmartThings 미설정")
+
+    # 2) 백엔드 서버 (친구분 스키마 그대로)
+    if STATE.backend_url:
+        payload = build_test_payload(device_id)
+        if payload is None:
+            parts.append("백엔드 페이로드 생성 실패")
+        else:
+            send_to_backend(payload, retries=2, backoff=1.0)
+            parts.append(f"백엔드 DANGER 전송 (seq={payload.get('seq')})")
+            ok_any = True
+    else:
+        parts.append("백엔드 미설정")
+
+    msg = " · ".join(parts)
+    STATE.note("alarm" if ok_any else "error", f"수동 테스트 — {msg}")
+    return {"ok": ok_any, "msg": msg}
+
+
+def on_webhook(payload: dict, bridge: str | None, device: str,
+               retries: int = 0, backoff: float = 1.0) -> None:
     """lepton_live 의 백엔드 전송을 가로챈다.
 
     experiment-bbox 최신 버전은 이 경로로 두 가지를 보낸다:
@@ -252,8 +331,13 @@ def on_webhook(payload: dict, bridge: str | None, device: str) -> None:
         STATE.thermal_health = health.get("thermal", "?")
         STATE.heartbeats += (1 if rtype == "HEARTBEAT" else 0)
 
+    # 백엔드가 지정돼 있으면 하트비트·이벤트를 그대로 중계한다.
+    # 친구분 스키마와 재시도 정책을 손대지 않는다.
+    send_to_backend(payload, retries=retries, backoff=backoff)
+
     if rtype == "EVENT":
-        STATE.note("info", f"상태 변화 → {etype}")
+        STATE.note("info", f"상태 변화 → {etype}"
+                   + (f"  → 백엔드 전송" if STATE.backend_url else ""))
 
     # 낙상(DANGER) 진입 순간에만 융합 판정
     if not (rtype == "EVENT" and etype == "DANGER"):
@@ -387,6 +471,11 @@ async function tick(){
     if(s.bridge_ok===null) br = pill('미전송','p-dim');
     else br = s.bridge_ok ? pill('정상','p-ok') : pill('실패','p-bad');
 
+    let bk;
+    if(!s.backend_url) bk = pill('미설정','p-dim');
+    else if(s.backend_fail) bk = pill(s.backend_sent+'건 · 실패 '+s.backend_fail,'p-warn');
+    else bk = pill(s.backend_sent+'건 전송','p-ok');
+
     document.getElementById('stat').innerHTML =
       row('최근 충격', imp) +
       row('충격 누적', s.impact_count + ' 회') +
@@ -398,6 +487,7 @@ async function tick(){
       row('알람 발송', s.alarms + ' 회') +
       row('억제/보류', s.suppressed + ' 회') +
       row('SmartThings', br) +
+      row('백엔드', bk) +
       row('융합 창', s.fusion_window + ' 초') +
       row('충격 필수', s.require_impact ? pill('ON','p-warn') : pill('OFF','p-dim')) +
       row('가동 시간', s.uptime + ' 초');
@@ -464,7 +554,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         cfg = getattr(self.server, "cfg", {})
         if self.path == "/test":
-            res = manual_test(cfg.get("bridge"), cfg.get("device", "falldetect"))
+            res = manual_test(cfg.get("bridge"), cfg.get("device", "falldetect"),
+                              cfg.get("device_id", "pi_node_01"))
         elif self.path == "/ping":
             b = cfg.get("bridge")
             if not b:
@@ -608,8 +699,32 @@ def main() -> int:
     if "--display" not in rest:
         rest.append("--display")
 
+    # --webhook <URL> 이 주어지면 그 주소를 실제 백엔드로 본다.
+    # lepton_live 에게는 내부 표식을 넘겨 post_json 이 호출되게만 하고,
+    # 실제 전송은 fusion_run 이 원본 post_json 으로 대신 수행한다.
+    backend_url = DEFAULT_BACKEND
+    if "--webhook" in rest:
+        i = rest.index("--webhook")
+        if i + 1 < len(rest):
+            v = rest[i + 1]
+            if v.lower() in ("none", "off", ""):
+                backend_url = None
+            elif not v.startswith("fusion://"):
+                backend_url = v
+            rest[i + 1] = "fusion://internal"
+    else:
+        rest += ["--webhook", "fusion://internal"]
+
+    # device-id 는 lepton_live 로도 넘기고 우리도 알아야 한다 (테스트 페이로드용)
+    device_id = "pi_node_01"
+    if "--device-id" in rest:
+        j = rest.index("--device-id")
+        if j + 1 < len(rest):
+            device_id = rest[j + 1]
+
     STATE = State(known.fusion_window, known.require_impact,
                   known.alarm_cooldown, known.impact_min_g)
+    STATE.backend_url = backend_url
 
     # GUI 호출을 대시보드로 돌린다
     cv2.imshow = lambda name, img: STATE.put_frame(img)
@@ -621,13 +736,15 @@ def main() -> int:
     # 영원히 붙잡아 /status 폴링과 버튼(POST)이 처리되지 않는다.
     server = ThreadingHTTPServer(("0.0.0.0", known.web_port), Handler)
     server.daemon_threads = True
-    server.cfg = {"bridge": known.bridge, "device": known.device}
+    server.cfg = {"bridge": known.bridge, "device": known.device,
+                  "device_id": device_id}
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     print()
     print(f"  대시보드:  http://{lan_ip()}:{known.web_port}")
     print(f"  진동센서:  {known.impact_port or '없음 (열화상만)'}")
     print(f"  SmartThings: {known.bridge + '/' + known.device if known.bridge else '없음'}")
+    print(f"  백엔드 서버: {backend_url or '없음 (--webhook none)'}")
     print(f"  융합 창: {known.fusion_window}초"
           f"{'  · 충격 필수' if known.require_impact else ''}")
     print(f"  종료: Ctrl+C")
@@ -654,9 +771,10 @@ def main() -> int:
 
     # 웹훅 가로채기 — 여기가 융합 지점이다.
     # 최신 bbox 브랜치의 시그니처: (url, payload, timeout, retries, backoff)
+    STATE._orig_post_json = lepton_live.post_json     # 실제 전송에 재사용
     lepton_live.post_json = (
         lambda url, payload, timeout=4, retries=0, backoff=1.0:
-        on_webhook(payload, known.bridge, known.device))
+        on_webhook(payload, known.bridge, known.device, retries, backoff))
 
     # 진동센서 목업 자리에 실제 값을 채워 넣는다.
     # lepton_live 의 build_payload 는 --health-vibrator / --rssi / --battery-pct 를
@@ -678,6 +796,7 @@ def main() -> int:
         return _orig_build(**kw)
 
     lepton_live.build_payload = _build
+    STATE._build_payload = _build                    # 테스트 버튼이 같은 형식을 쓰도록
 
     # --webhook 에 아무 값이나 넣어야 lepton_live 가 post_json 을 호출한다
     if "--webhook" not in rest:
@@ -692,7 +811,8 @@ def main() -> int:
         s = STATE.snapshot()
         print()
         print(f"  열화상 낙상 {s['thermal_events']}회 · 충격 {s['impact_count']}회 "
-              f"· 알람 {s['alarms']}회 · 억제 {s['suppressed']}회")
+              f"· 알람 {s['alarms']}회 · 억제 {s['suppressed']}회 "
+              f"· 백엔드 {s['backend_sent']}건(실패 {s['backend_fail']})")
         server.shutdown()
     return 0
 
