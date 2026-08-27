@@ -161,6 +161,7 @@ class State:
             "impact_list": list(self.impacts),
             "level_series": list(self.levels),
             "level_g": round(self.level_g, 3),
+            "deghost": (DEGHOST.status() if DEGHOST else None),
             "ffc_count": self.ffc_count,
             "ffc_age": (None if not self.ffc_t
                         else round(time.time() - self.ffc_t)),
@@ -672,6 +673,7 @@ li.info{color:var(--dim)}
         <button id="ping" class="btn">연결 확인</button>
         <button id="test" class="btn btn-primary">테스트 알림</button>
         <button id="ffc" class="btn">FFC</button>
+        <button id="dgr" class="btn">잔상 재보정</button>
       </div>
       <p id="tres" style="font-size:12.5px;color:var(--dim);margin:0;min-height:18px"></p>
     </div>
@@ -729,6 +731,10 @@ async function tick(){
       row('SmartThings', br) +
       row('백엔드', bk) +
       row('융합 창', s.fusion_window + ' 초') +
+      (s.deghost ? row('잔상 제거',
+          !s.deghost.ready ? pill('배경 학습 중 ' + s.deghost.samples + '/8','p-warn')
+          : s.deghost.frozen ? pill('적용 · 배경 고정','p-ok')
+          : pill('적용 중','p-ok')) : row('잔상 제거', pill('꺼짐','p-dim'))) +
       row('FFC', s.ffc_count + ' 회'
           + (s.ffc_age===null ? '' : ' · ' + s.ffc_age + '초 전')) +
       row('가동 시간', s.uptime + ' 초');
@@ -807,6 +813,7 @@ async function post(path, btn, label){
 document.getElementById('ping').onclick = e => post('/ping', e.target, '연결 확인');
 document.getElementById('test').onclick = e => post('/test', e.target, '테스트 알림');
 document.getElementById('ffc').onclick = e => post('/ffc', e.target, 'FFC');
+document.getElementById('dgr').onclick = e => post('/deghost-reset', e.target, '잔상 재보정');
 setInterval(tick, 1000); tick();
 </script></body></html>""".encode("utf-8")
 
@@ -857,6 +864,13 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = run_ffc(cfg.get("video", "/dev/video0"))
             STATE.note("info" if ok else "error", f"수동 FFC — {msg}")
             res = {"ok": ok, "msg": msg}
+        elif self.path == "/deghost-reset":
+            if DEGHOST is None:
+                res = {"ok": False, "msg": "--deghost 가 꺼져 있습니다"}
+            else:
+                DEGHOST.reset()
+                STATE.note("info", "잔상 배경 재추정 — 화면에서 비켜 주세요")
+                res = {"ok": True, "msg": "재추정 시작 (약 12초, 사람이 없어야 정확)"}
         elif self.path == "/ping":
             b = cfg.get("bridge")
             if not b:
@@ -880,6 +894,93 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+# ──────────────────────────────────────────────────────────── 잔상 제거
+
+class Deghost:
+    """FFC 가 구워 넣은 고정 잔상을 빼낸다.
+
+    잔상은 **정지된 덧셈 패턴**이다. FFC 순간의 장면이 기준면에 굳어
+    이후 모든 프레임에서 빠지기 때문에, 사람 모양의 음영이 화면에
+    고정으로 남는다. 다음 FFC 까지 그 패턴은 변하지 않는다.
+
+    그래서 최근 프레임들의 **픽셀별 중앙값**을 구하면 그게 곧
+    "움직이지 않는 것들"(잔상 + 벽·가구 같은 정지 열원)이 된다.
+    이걸 빼면 잔상이 사라진다. 중앙값은 평균과 달리 지나가는 사람에
+    끌려가지 않는다.
+
+    ⚠ 핵심 안전장치: 사람이 누워 있거나 쓰러진 동안에는 배경을
+    갱신하지 않는다. 갱신하면 가만히 있는 사람이 배경으로 흡수되어
+    **정작 감지해야 할 낙상자가 화면에서 지워진다.**
+    """
+
+    def __init__(self, window_sec: float = 90.0, sample_sec: float = 1.5):
+        self.samples: deque = deque(maxlen=max(8, int(window_sec / sample_sec)))
+        self.sample_sec = sample_sec
+        self.field = None          # 추정된 고정 패턴
+        self.level = 0.0           # 원래 밝기 수준 (빼고 나서 되돌린다)
+        self.last_sample = 0.0
+        self.last_build = 0.0
+        self.frozen = False
+        self.resets = 0
+
+    def reset(self) -> None:
+        self.samples.clear()
+        self.field = None
+        self.resets += 1
+
+    def apply(self, a, moving: bool):
+        """a: (H,W) 원본 프레임. moving=True 면 배경 갱신을 멈춘다."""
+        if a is None or a.ndim != 2:
+            return a
+        now = time.time()
+        f = a.astype(np.float32)
+
+        # FFC 가 방금 돌면 화면 전체 수준이 확 바뀐다. 예전 배경은 무효다.
+        if self.field is not None:
+            shift = abs(float(np.median(f)) - self.level)
+            if shift > 120:                       # Y16 카운트 기준
+                self.reset()
+                STATE.note("info", "FFC 감지 — 배경 재추정 시작")
+
+        self.frozen = moving
+        if not moving and now - self.last_sample >= self.sample_sec:
+            self.last_sample = now
+            self.samples.append(f.copy())
+
+        if len(self.samples) >= 8 and now - self.last_build >= self.sample_sec:
+            self.last_build = now
+            self.field = np.median(np.stack(self.samples), axis=0)
+            self.level = float(np.median(self.field))
+
+        if self.field is None:
+            self.level = float(np.median(f))
+            return a
+
+        # 고정 패턴을 빼고, 원래 밝기 수준을 되돌린다.
+        out = f - self.field + self.level
+        return np.clip(out, 0, 65535).astype(a.dtype)
+
+    def status(self) -> dict:
+        return {"ready": self.field is not None,
+                "samples": len(self.samples),
+                "need": max(0, 8 - len(self.samples)),
+                "frozen": self.frozen,
+                "resets": self.resets}
+
+
+DEGHOST: Deghost | None = None
+
+
+def deghost_frame(a):
+    """배경 갱신을 멈춰야 할 상황인지 판단해 보정을 건다."""
+    if DEGHOST is None:
+        return a
+    # 사람이 누워 있거나(WARNING) 쓰러진(DANGER) 동안은 갱신 중지.
+    # 이때 갱신하면 낙상자가 배경으로 흡수되어 화면에서 지워진다.
+    moving = STATE.last_event_type in ("WARNING", "DANGER")
+    return DEGHOST.apply(a, moving)
 
 
 # ──────────────────────────────────────────────────────────── 카메라
@@ -1046,6 +1147,11 @@ def main() -> int:
                      help="soft 모드에서 이 이상의 충격이면 '누움'도 낙상으로 승격")
     pre.add_argument("--no-impact-delay", type=float, default=6.0,
                      help="soft 모드에서 충격 없는 낙상은 이 시간 지켜본 뒤 알람(초)")
+    pre.add_argument("--deghost", action="store_true",
+                     help="FFC 가 구워 넣은 고정 잔상을 빼낸다 (모델 입력에도 적용)")
+    pre.add_argument("--deghost-window", type=float, default=90.0,
+                     help="배경 추정에 쓸 시간 창(초). 길수록 안정적이지만 "
+                          "조명·온도 변화에 늦게 따라간다")
     pre.add_argument("--ffc-interval", type=float, default=0,
                      help="이 주기(초)로 FFC 를 자동 실행한다. 0 = 끔. "
                           "Lepton 은 자체 자동 FFC 가 있으므로 보통 필요 없다")
@@ -1090,6 +1196,10 @@ def main() -> int:
                   escalate_g=known.escalate_g,
                   no_impact_delay=known.no_impact_delay)
     threading.Thread(target=pending_watcher, daemon=True).start()
+
+    global DEGHOST
+    if known.deghost:
+        DEGHOST = Deghost(window_sec=known.deghost_window)
 
     # FFC 는 /dev/videoN 을 직접 다룬다. --camera 로 넘어온 인덱스에서 유도한다.
     video_dev = "/dev/video0"
@@ -1144,7 +1254,8 @@ def main() -> int:
 
     # 프레임 형태 교정
     _orig_ftg = lepton_live.frame_to_gray
-    lepton_live.frame_to_gray = lambda frame, y16: _orig_ftg(fix_frame(frame), y16)
+    lepton_live.frame_to_gray = (
+        lambda frame, y16: _orig_ftg(deghost_frame(fix_frame(frame)), y16))
 
     # 카메라 열기 교체 (PureThermal 다중 백엔드 탐색 회피)
     lepton_live.camera_source = lepton_frames
