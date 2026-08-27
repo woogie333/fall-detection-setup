@@ -13,7 +13,7 @@
   Lepton 3.0 ──USB──┐
                     │   fusion_run.py
                     ├──►  lepton_live.py (bbox 브랜치)
-  진동 노드          │       │ 지속 낙상 판정 (--fall-hold)
+  진동 노드          │       │ 상태 판정 (SAFE/WARNING/DANGER)
    └─ESP-NOW─┐      │       ▼
              │      │    융합: 열화상 낙상 + 최근 충격
   수신기 XIAO ┘──USB─┘       │
@@ -21,9 +21,21 @@
                        edgebridge ──► SmartThings 허브 ──► 폰 알림
 ```
 
-**융합 지점**은 `lepton_live.py` 의 웹훅 호출입니다. 그 코드는 이미
-"FALL 이 `--fall-hold` 초 동안 유지됨" 을 확인한 뒤에만 웹훅을 부르므로,
-`fusion_run.py` 는 그 시점에 진동센서 신호를 함께 보고 최종 결정을 내립니다.
+**융합 지점**은 `lepton_live.py` 의 백엔드 전송입니다. 최신 bbox 브랜치는
+이 경로로 두 가지를 보냅니다.
+
+| report_type | 언제 | event_type |
+|---|---|---|
+| `HEARTBEAT` | 5초 주기 | SAFE / WARNING / DANGER |
+| `EVENT` | 사람 상태가 바뀐 순간 | SAFE=안전, WARNING=누움, DANGER=낙상 |
+
+`fusion_run.py` 는 **`EVENT` + `DANGER`** 일 때만 융합 판정을 하고, 하트비트는
+대시보드 표시에만 씁니다.
+
+덤으로, 친구분 코드의 **진동센서 목업 자리에 실제 값을 채워 넣습니다.**
+`sensor_health.vibrator` 는 수신기로부터 최근 1분 내 수신이 있으면 `OK`,
+없으면 `FAIL` 이 되고, `device.rssi` 와 `battery_pct` 도 실제 값으로 대체됩니다.
+`--health-vibrator` / `--rssi` 목업 옵션을 줄 필요가 없습니다.
 
 친구분 저장소 파일은 **한 줄도 수정하지 않습니다.**
 
@@ -64,30 +76,39 @@ git fetch origin experiment-bbox && git checkout experiment-bbox
 
 ```bash
 cd ~/fall-detection && source .venv/bin/activate
-python3 fusion_run.py --camera 9 --y16 --thr 0.4
+python3 fusion_run.py --camera 9 --y16 \
+  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5
 ```
+
+> 친구분이 안내한 실행 옵션을 그대로 넘기면 됩니다. 다만 **`--camera` 는 보드에서
+> 9**(친구분 PC 기준 1이 아님)이고, Lepton 을 Linux 에서 쓰려면 **`--y16` 이
+> 필요**합니다. `--display` 는 자동으로 붙으니 넣지 마세요.
 
 브라우저에서 `http://<보드IP>:8090`
 
 - [ ] 열화상 영상이 보인다
 - [ ] SAFE / LIED / FALL 상태가 바뀐다
-- [ ] 넘어져보면 로그에 `열화상 낙상` 이 남는다
+- [ ] 넘어져보면 로그에 `상태 변화 → DANGER` 가 남는다
+- [ ] 대시보드 "현재 상태" 가 SAFE ↔ WARNING ↔ DANGER 로 바뀐다
 
 ### 1-2. 진동센서 추가
 
 ```bash
-python3 fusion_run.py --camera 9 --y16 --thr 0.4 \
+python3 fusion_run.py --camera 9 --y16 \
+  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \
   --impact-port /dev/ttyACM0
 ```
 
 - [ ] 대시보드 "최근 충격" 이 갱신된다
+- [ ] 하트비트 payload 의 `sensor_health.vibrator` 가 `OK` 로 바뀐다
 - [ ] 바닥을 두드리면 로그에 `충격 N.NNg` 가 뜬다
 - [ ] 신호 세기가 **-70dBm 이상**이다
 
 ### 1-3. SmartThings 연결
 
 ```bash
-python3 fusion_run.py --camera 9 --y16 --thr 0.4 \
+python3 fusion_run.py --camera 9 --y16 \
+  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \
   --impact-port /dev/ttyACM0 \
   --bridge $(hostname -I | awk '{print $1}'):8088 \
   --device falldetect
@@ -123,9 +144,9 @@ python3 fusion_run.py ... --require-impact
 --fusion-window 10      # 기본값
 ```
 
-열화상 낙상 판정 시점 기준으로 이 시간 안의 충격을 같은 사건으로 봅니다.
-`--fall-hold`(기본 3초)를 감안하면 실제 충격은 판정보다 3~5초 앞서므로,
-10초면 충분하고 너무 길면 무관한 충격을 엮게 됩니다.
+DANGER 전환 시점 기준으로 이 시간 안의 충격을 같은 사건으로 봅니다.
+`--fall-min-hold`(5초)와 `--state-hold`(2초)를 감안하면 실제 충격은 판정보다
+5~8초 앞서므로, 10초가 적당합니다. 너무 길면 무관한 충격을 엮게 됩니다.
 
 ### 쿨다운
 
@@ -158,12 +179,15 @@ python3 fusion_run.py ... --require-impact
 
 | 증상 | 대응 |
 |---|---|
-| 낙상을 놓친다 | `--thr` 을 낮춘다 (0.4 → 0.3) |
+| 낙상을 놓친다 | `--thr` 을 낮춘다 (0.35 → 0.3) |
 | 오탐이 많다 | `--thr` 을 올린다, 또는 `--require-impact` |
-| 눕기를 낙상으로 본다 | `--fall-hold` 를 늘린다, `--lie-aspect` 조정 |
-| 알람이 너무 늦다 | `--fall-hold` 를 줄인다 (3 → 2) |
+| FALL↔LIED 가 깜빡인다 | `--lie-hyst` 를 키운다 (0.3 → 0.4) |
+| 눕기를 낙상으로 본다 | `--fall-min-hold` 를 늘린다, `--lie-aspect` 조정 |
+| 알람이 너무 늦다 | `--fall-min-hold` 를 줄인다, `--state-hold` 도 확인 |
+| 빠른 앉기를 낙상으로 본다 | `--collapse-trigger` 를 뺀다 |
 
-`--thr 0.4` 는 새 모델의 검증 최적값입니다(AP 0.974, Recall 0.953).
+`--thr 0.35` 는 친구분이 실사용에서 권한 값이고, 모델의 검증 최적값은 0.4
+(AP 0.974, Recall 0.953)입니다. 낙상 감지는 놓치는 쪽이 위험하므로 조금 낮게 잡는 게 맞습니다.
 다만 학습 데이터가 FLIR One 고해상도라 Lepton 에서는 재조정이 필요할 수 있습니다.
 
 ---
@@ -184,7 +208,8 @@ User=$USER
 WorkingDirectory=$HOME/fall-detection
 ExecStartPre=/bin/sleep 20
 ExecStart=$HOME/fall-detection/.venv/bin/python fusion_run.py \\
-  --camera 9 --y16 --thr 0.4 \\
+  --camera 9 --y16 \\
+  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \\
   --impact-port /dev/ttyACM0 \\
   --bridge $(hostname -I | awk '{print $1}'):8088 --device falldetect
 Restart=always

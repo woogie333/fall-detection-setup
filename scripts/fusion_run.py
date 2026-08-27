@@ -27,7 +27,11 @@ lepton_live.py(experiment-bbox 브랜치)를 그대로 구동하되,
 
   → 대시보드: http://<보드IP>:8090
 
-lepton_live.py 의 옵션(--thr, --stride, --fall-hold ...)을 그대로 쓸 수 있다.
+lepton_live.py 의 옵션을 그대로 넘길 수 있다. 최신 bbox 브랜치 권장 조합:
+
+  python3 fusion_run.py --camera 9 --y16 \
+      --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \
+      --impact-port /dev/ttyACM0 --bridge <보드IP>:8088 --device falldetect
 """
 from __future__ import annotations
 
@@ -60,8 +64,13 @@ class State:
         self.last_impact_g = 0.0
         self.impact_count = 0
         self.impact_rssi = 0
+        self.impact_batt = 0
 
-        self.thermal_events = 0      # lepton_live 가 지속 낙상으로 판단한 횟수
+        self.thermal_events = 0      # DANGER EVENT 횟수
+        self.heartbeats = 0
+        self.last_event_type = "—"   # SAFE | WARNING | DANGER
+        self.last_report = "—"
+        self.thermal_health = "—"
         self.alarms = 0              # 실제로 SmartThings 로 보낸 횟수
         self.suppressed = 0
         self.last_alarm_t = -1e9
@@ -101,6 +110,9 @@ class State:
             "impact_rssi": self.impact_rssi,
             "impact_fresh": age <= self.fusion_window,
             "thermal_events": self.thermal_events,
+            "heartbeats": self.heartbeats,
+            "event_type": self.last_event_type,
+            "thermal_health": self.thermal_health,
             "alarms": self.alarms,
             "suppressed": self.suppressed,
             "require_impact": self.require_impact,
@@ -142,6 +154,7 @@ def impact_reader(port: str, baud: int) -> None:
                     STATE.last_impact_g = imp.peak_g
                     STATE.impact_count += 1
                     STATE.impact_rssi = imp.rssi
+                    STATE.impact_batt = imp.battery_mv // 30 if imp.battery_mv else 0
                 STATE.note("impact",
                            f"충격 {imp.peak_g:.2f}g  rssi={imp.rssi}dBm  ({imp.device})")
         except Exception as exc:
@@ -179,12 +192,32 @@ def send_to_bridge(bridge: str, device: str) -> bool:
         return False
 
 
-def on_thermal_fall(payload: dict, bridge: str | None, device: str) -> None:
-    """lepton_live 가 '지속 낙상' 으로 판단했을 때 호출된다.
+def on_webhook(payload: dict, bridge: str | None, device: str) -> None:
+    """lepton_live 의 백엔드 전송을 가로챈다.
 
-    이 시점에서 이미 --fall-hold 초 동안 FALL 이 유지된 상태다.
-    여기서 진동센서 신호를 함께 보고 최종 결정을 내린다.
+    experiment-bbox 최신 버전은 이 경로로 두 가지를 보낸다:
+      · HEARTBEAT — 5초 주기 생존 신고 (event_type = SAFE/WARNING/DANGER)
+      · EVENT     — 사람 상태가 바뀐 순간 (DANGER = 낙상)
+
+    알람은 EVENT + DANGER 일 때만 낸다. 하트비트는 대시보드 표시에만 쓴다.
     """
+    rtype = payload.get("report_type", "?")
+    etype = payload.get("event_type", "?")
+    health = payload.get("sensor_health", {})
+
+    with STATE.lock:
+        STATE.last_event_type = etype
+        STATE.last_report = rtype
+        STATE.thermal_health = health.get("thermal", "?")
+        STATE.heartbeats += (1 if rtype == "HEARTBEAT" else 0)
+
+    if rtype == "EVENT":
+        STATE.note("info", f"상태 변화 → {etype}")
+
+    # 낙상(DANGER) 진입 순간에만 융합 판정
+    if not (rtype == "EVENT" and etype == "DANGER"):
+        return
+
     now = time.time()
     age = STATE.impact_age()
     fresh = age <= STATE.fusion_window
@@ -192,9 +225,7 @@ def on_thermal_fall(payload: dict, bridge: str | None, device: str) -> None:
     with STATE.lock:
         STATE.thermal_events += 1
 
-    held = payload.get("held_seconds", "?")
-    prob = payload.get("probability", "?")
-    detail = f"열화상 낙상 (유지 {held}s, p={prob})"
+    detail = f"열화상 DANGER (seq={payload.get('seq', '?')})"
 
     if fresh:
         detail += f" + 충격 {STATE.last_impact_g:.2f}g ({age:.1f}초 전)"
@@ -303,7 +334,10 @@ async function tick(){
       row('최근 충격', imp) +
       row('충격 누적', s.impact_count + ' 회') +
       row('신호 세기', s.impact_rssi ? s.impact_rssi+' dBm' : '—') +
+      row('현재 상태', s.event_type) +
+      row('열화상 상태', s.thermal_health) +
       row('열화상 낙상', s.thermal_events + ' 회') +
+      row('하트비트', s.heartbeats + ' 회') +
       row('알람 발송', s.alarms + ' 회') +
       row('억제/보류', s.suppressed + ' 회') +
       row('SmartThings', br) +
@@ -500,9 +534,29 @@ def main() -> int:
     lepton_live.camera_source = lepton_frames
 
     # 웹훅 가로채기 — 여기가 융합 지점이다.
-    # lepton_live 는 --fall-hold 초 동안 FALL 이 유지됐을 때만 이걸 부른다.
-    lepton_live.post_json = lambda url, payload, timeout=4: on_thermal_fall(
-        payload, known.bridge, known.device)
+    # 최신 bbox 브랜치의 시그니처: (url, payload, timeout, retries, backoff)
+    lepton_live.post_json = (
+        lambda url, payload, timeout=4, retries=0, backoff=1.0:
+        on_webhook(payload, known.bridge, known.device))
+
+    # 진동센서 목업 자리에 실제 값을 채워 넣는다.
+    # lepton_live 의 build_payload 는 --health-vibrator / --rssi / --battery-pct 를
+    # 그대로 싣는데, 우리는 수신기에서 받은 진짜 값을 알고 있다.
+    _orig_build = lepton_live.build_payload
+
+    def _build(**kw):
+        if known.impact_port:
+            fresh = STATE.impact_age() <= 60         # 1분 내 수신 = 살아 있음
+            kw["sensor_health"] = dict(kw.get("sensor_health", {}))
+            kw["sensor_health"]["vibrator"] = "OK" if fresh else "FAIL"
+            with STATE.lock:
+                if STATE.impact_rssi:
+                    kw["rssi"] = STATE.impact_rssi
+                if STATE.impact_batt:
+                    kw["battery_pct"] = max(0, min(100, STATE.impact_batt))
+        return _orig_build(**kw)
+
+    lepton_live.build_payload = _build
 
     # --webhook 에 아무 값이나 넣어야 lepton_live 가 post_json 을 호출한다
     if "--webhook" not in rest:
