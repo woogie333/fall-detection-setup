@@ -103,6 +103,9 @@ class State:
         self.log: deque = deque(maxlen=40)
         self.impacts: deque = deque(maxlen=12)   # 최근 충격 이력
         self.levels: deque = deque(maxlen=150)   # 실시간 진동 수준 (약 30초)
+        self.ffc_count = 0
+        self.ffc_t = 0.0
+        self.ffc_ctrl: str | None = None
         self.level_g = 0.0
         self.level_t = 0.0
 
@@ -158,6 +161,9 @@ class State:
             "impact_list": list(self.impacts),
             "level_series": list(self.levels),
             "level_g": round(self.level_g, 3),
+            "ffc_count": self.ffc_count,
+            "ffc_age": (None if not self.ffc_t
+                        else round(time.time() - self.ffc_t)),
             "level_live": bool(self.level_t and
                                time.time() - self.level_t < 3),
             "impact_batt": self.impact_batt,
@@ -376,6 +382,52 @@ def build_test_payload(device_id: str) -> dict | None:
         sensor_health={"vibrator": "UNKNOWN", "radar": "UNKNOWN", "thermal": "OK"},
         battery_pct=100, rssi=-55, uptime_sec=int(now - STATE.started),
     )
+
+
+# ──────────────────────────────────────────────────────────── FFC
+
+def run_ffc(dev: str) -> tuple[bool, str]:
+    """Lepton 셔터 보정(FFC)을 한 번 실행한다.
+
+    PureThermal 은 FFC 를 V4L2 표준 컨트롤이 아니라 UVC 확장 유닛으로
+    노출한다. 보드/펌웨어마다 이름이 달라서, 알려진 후보를 순서대로
+    시도하고 되는 걸 쓴다.
+
+    영상 스트림이 열려 있는 상태에서도 컨트롤 설정은 별개 경로라
+    보통 문제없이 동작한다.
+    """
+    import subprocess
+
+    candidates = ["flat_field_correction", "ffc", "run_ffc",
+                  "lepton_ffc", "flat_field_correct"]
+    tried = []
+    for name in candidates:
+        try:
+            r = subprocess.run(["v4l2-ctl", "-d", dev, f"--set-ctrl={name}=1"],
+                               capture_output=True, text=True, timeout=5)
+        except FileNotFoundError:
+            return False, "v4l2-ctl 이 없습니다 (apt install v4l-utils)"
+        except subprocess.TimeoutExpired:
+            return False, "v4l2-ctl 응답 없음"
+        if r.returncode == 0 and "unknown" not in (r.stderr or "").lower():
+            with STATE.lock:
+                STATE.ffc_count += 1
+                STATE.ffc_t = time.time()
+                STATE.ffc_ctrl = name
+            return True, f"FFC 실행 ({name})"
+        tried.append(name)
+
+    return False, ("이 장치에 FFC 컨트롤이 없습니다. "
+                   f"`v4l2-ctl -d {dev} --list-ctrls` 로 실제 이름을 확인하세요 "
+                   f"(시도: {', '.join(tried)})")
+
+
+def ffc_timer(dev: str, interval: float) -> None:
+    """주기적으로 FFC 를 실행한다. 0 이면 돌지 않는다."""
+    while True:
+        time.sleep(interval)
+        ok, msg = run_ffc(dev)
+        STATE.note("info" if ok else "error", f"주기 FFC — {msg}")
 
 
 def manual_test(bridge: str | None, device: str, device_id: str) -> dict:
@@ -619,6 +671,7 @@ li.info{color:var(--dim)}
       <div style="display:flex;gap:8px;margin-bottom:8px">
         <button id="ping" class="btn">연결 확인</button>
         <button id="test" class="btn btn-primary">테스트 알림</button>
+        <button id="ffc" class="btn">FFC</button>
       </div>
       <p id="tres" style="font-size:12.5px;color:var(--dim);margin:0;min-height:18px"></p>
     </div>
@@ -676,6 +729,8 @@ async function tick(){
       row('SmartThings', br) +
       row('백엔드', bk) +
       row('융합 창', s.fusion_window + ' 초') +
+      row('FFC', s.ffc_count + ' 회'
+          + (s.ffc_age===null ? '' : ' · ' + s.ffc_age + '초 전')) +
       row('가동 시간', s.uptime + ' 초');
 
     // ── 진동센서 카드
@@ -751,6 +806,7 @@ async function post(path, btn, label){
 }
 document.getElementById('ping').onclick = e => post('/ping', e.target, '연결 확인');
 document.getElementById('test').onclick = e => post('/test', e.target, '테스트 알림');
+document.getElementById('ffc').onclick = e => post('/ffc', e.target, 'FFC');
 setInterval(tick, 1000); tick();
 </script></body></html>""".encode("utf-8")
 
@@ -797,6 +853,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/test":
             res = manual_test(cfg.get("bridge"), cfg.get("device", "falldetect"),
                               cfg.get("device_id", "pi_node_01"))
+        elif self.path == "/ffc":
+            ok, msg = run_ffc(cfg.get("video", "/dev/video0"))
+            STATE.note("info" if ok else "error", f"수동 FFC — {msg}")
+            res = {"ok": ok, "msg": msg}
         elif self.path == "/ping":
             b = cfg.get("bridge")
             if not b:
@@ -986,6 +1046,9 @@ def main() -> int:
                      help="soft 모드에서 이 이상의 충격이면 '누움'도 낙상으로 승격")
     pre.add_argument("--no-impact-delay", type=float, default=6.0,
                      help="soft 모드에서 충격 없는 낙상은 이 시간 지켜본 뒤 알람(초)")
+    pre.add_argument("--ffc-interval", type=float, default=0,
+                     help="이 주기(초)로 FFC 를 자동 실행한다. 0 = 끔. "
+                          "Lepton 은 자체 자동 FFC 가 있으므로 보통 필요 없다")
     pre.add_argument("--alarm-cooldown", type=float, default=180.0)
     pre.add_argument("--jpeg-quality", type=int, default=80,
                      help="스트림 JPEG 품질 1~100. 낮추면 대역폭이 줄어 끊김이 개선된다")
@@ -1027,6 +1090,18 @@ def main() -> int:
                   escalate_g=known.escalate_g,
                   no_impact_delay=known.no_impact_delay)
     threading.Thread(target=pending_watcher, daemon=True).start()
+
+    # FFC 는 /dev/videoN 을 직접 다룬다. --camera 로 넘어온 인덱스에서 유도한다.
+    video_dev = "/dev/video0"
+    if "--camera" in rest:
+        k = rest.index("--camera")
+        if k + 1 < len(rest):
+            v = rest[k + 1]
+            video_dev = v if v.startswith("/dev/") else f"/dev/video{v}"
+    if known.ffc_interval > 0:
+        threading.Thread(target=ffc_timer,
+                         args=(video_dev, known.ffc_interval),
+                         daemon=True).start()
     STATE.backend_url = backend_url
     STATE.jpeg_quality = max(1, min(100, known.jpeg_quality))
 
@@ -1041,7 +1116,7 @@ def main() -> int:
     server = ThreadingHTTPServer(("0.0.0.0", known.web_port), Handler)
     server.daemon_threads = True
     server.cfg = {"bridge": known.bridge, "device": known.device,
-                  "device_id": device_id}
+                  "device_id": device_id, "video": video_dev}
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     print()
