@@ -35,11 +35,16 @@
                             // 0 = 딥슬립 + 인터럽트 (실사용)
 
 // ── 무선 디버깅용 ──────────────────────────────────────────────────
-#define USE_BROADCAST 0     // 1 = 특정 MAC 대신 브로드캐스트로 전송.
+#define USE_BROADCAST 1     // 1 = 특정 MAC 대신 브로드캐스트로 전송.
                             //     수신기에 뜨면 MAC 문제, 안 뜨면 채널/무선 문제.
                             //     원인 확인이 끝나면 0 으로 되돌리세요.
 
-#define HEARTBEAT_SEC 3     // DEBUG_MODE 에서 이 주기로 자동 전송 (0 = 끔).
+#define MONITOR_HZ 5        // 대시보드 실시간 그래프용. 이 주기로 현재 진동 수준을
+                            //     보낸다 (0 = 끔). DEBUG_MODE(=상시 전원) 에서만
+                            //     동작한다. 딥슬립 배터리 모드에서는 물리적으로
+                            //     불가능하다 — 자고 있는 동안은 보낼 수 없다.
+
+#define HEARTBEAT_SEC 0     // DEBUG_MODE 에서 이 주기로 자동 전송 (0 = 끔).
                             //     두드리지 않아도 무선 경로를 확인할 수 있다.
 // ───────────────────────────────────────────────────────────────────
 
@@ -54,9 +59,14 @@ uint8_t RECEIVER_MAC[6] =
 const uint8_t PIN_INT1   = 3;      // D1
 const uint8_t ADXL_ADDR  = 0x53;   // SDO=GND
 
-// 충격 임계값. 62.5 mg/LSB → 32 ≈ 2.0g
-// 너무 낮으면 발소리에도 깨어나 배터리를 갉아먹는다.
-const uint8_t ACT_THRESHOLD = 32;
+// 충격 임계값. THRESH_ACT 는 range 와 무관하게 62.5 mg/LSB 다.
+// AC 커플링(아래 ACT_INACT=0xF0)이라 이 값은 **중력을 뺀 변화량** 기준이다.
+//   8 = 0.5g,  12 = 0.75g,  16 = 1.0g,  32 = 2.0g
+// 사람이 넘어질 때 바닥에 놓인 노드가 받는 값은 보통 0.3~1.5g 다.
+// 2.0g 는 망치로 쳐야 나오는 값이라 실제 낙상을 통째로 놓친다.
+// 너무 낮으면 발소리에도 깨어나 배터리를 갉아먹으므로, DEBUG_MODE 로
+// 실제 낙상 값을 재본 뒤 그 절반쯤으로 잡으세요.
+const uint8_t ACT_THRESHOLD = 8;
 
 const uint16_t CAPTURE_MS = 400;   // 깨어난 뒤 파형을 볼 시간
 const char*    DEVICE_ID  = "vib-01";
@@ -80,7 +90,9 @@ const uint8_t  ESPNOW_CHANNEL = 1;
 
 // ─── 전송 페이로드 ─────────────────────────────────────────────────
 
+// kind: 0 = 충격 이벤트, 1 = 실시간 수준 보고(모니터링)
 typedef struct __attribute__((packed)) {
+  uint8_t  kind;
   char     device_id[8];
   uint32_t seq;
   float    peak_g;        // 충격 최대 크기
@@ -137,7 +149,10 @@ bool adxlBegin() {
 
   // Activity 인터럽트: 임계 초과 시 INT1 을 HIGH 로
   adxlWrite(REG_THRESH_ACT, ACT_THRESHOLD);
-  adxlWrite(REG_ACT_INACT, 0x70);      // x,y,z 모두 참여 (AC 커플링 없음)
+  // 0xF0 = AC 커플링 + x,y,z 참여.
+  // AC 커플링이면 칩이 직전 값을 기준선으로 삼아 **중력 1g 를 자동으로 뺀다.**
+  // DC(0x70) 로 두면 가만히 있어도 1g 라 임계값을 1g 만큼 낭비하게 된다.
+  adxlWrite(REG_ACT_INACT, 0xF0);
   adxlWrite(REG_INT_MAP, 0x00);        // 모든 인터럽트를 INT1 으로
   adxlWrite(REG_INT_ENABLE, 0x10);     // Activity 만 활성
   adxlRead(REG_INT_SOURCE);            // 래치 초기화
@@ -207,8 +222,20 @@ bool espnowBegin() {
   return true;
 }
 
+// 실시간 수준 보고. 응답을 기다리지 않는다 — 초당 여러 번 보내므로
+// sendImpact 처럼 300ms 씩 블로킹하면 측정 루프가 멈춘다.
+void sendLevel(float peak_g) {
+  ImpactMsg m = {};
+  m.kind = 1;
+  strncpy(m.device_id, DEVICE_ID, sizeof(m.device_id) - 1);
+  m.seq = boot_count;
+  m.peak_g = peak_g;
+  esp_now_send(RECEIVER_MAC, (uint8_t *)&m, sizeof(m));
+}
+
 void sendImpact(float peak_g, float dur_ms) {
   ImpactMsg m = {};
+  m.kind = 0;
   strncpy(m.device_id, DEVICE_ID, sizeof(m.device_id) - 1);
   m.seq = boot_count;
   m.peak_g = peak_g;
@@ -251,7 +278,10 @@ void captureImpact(float &peak_g, float &dur_ms) {
   while (millis() - t0 < CAPTURE_MS) {
     int16_t x, y, z;
     adxlReadXYZ(x, y, z);
-    float mag = sqrtf(toG(x) * toG(x) + toG(y) * toG(y) + toG(z) * toG(z));
+    // 중력을 뺀 **변화량**을 본다. 가만히 있으면 0 근처, 충격이 오면 튄다.
+    // 예전처럼 절대 크기를 쓰면 정지 상태에서도 1.0g 라 임계값이 왜곡된다.
+    float mag = fabsf(sqrtf(toG(x) * toG(x) + toG(y) * toG(y)
+                            + toG(z) * toG(z)) - 1.0f);
     if (mag > peak_g) peak_g = mag;
 
     if (mag >= TRIG_G) {
@@ -289,7 +319,9 @@ void setup() {
   if (DEBUG_MODE) {
     Serial.println("\n[DEBUG] 딥슬립 없이 가속도를 계속 출력합니다.");
     Serial.println("바닥을 두드리거나 물건을 떨어뜨려 보세요.");
-    Serial.println("여기서 본 값으로 ACT_THRESHOLD 를 정한 뒤 DEBUG_MODE 를 0 으로.\n");
+    Serial.println("peak 은 **중력을 뺀** 값입니다 (가만히 두면 0.0 근처).");
+    Serial.println("실제로 넘어져 보고 그때 peak 을 적어두세요.");
+    Serial.println("ACT_THRESHOLD = 그 값의 절반 / 0.0625  로 잡으면 됩니다.\n");
     espnowBegin();
     return;
   }
@@ -330,7 +362,7 @@ void loop() {
     int16_t x, y, z;
     adxlReadXYZ(x, y, z);
     gx = toG(x); gy = toG(y); gz = toG(z);
-    float m = sqrtf(gx * gx + gy * gy + gz * gz);
+    float m = fabsf(sqrtf(gx * gx + gy * gy + gz * gz) - 1.0f);   // 중력 제외
     if (m > peak) peak = m;
     samples++;
   }
@@ -339,7 +371,7 @@ void loop() {
   bool over = peak >= TRIG_G;
 
   char bar[41];
-  int blen = (int)(peak * 8);
+  int blen = (int)(peak * 20);   // 0.5g 가 10칸
   if (blen > 40) blen = 40;
   for (int i = 0; i < blen; i++) bar[i] = '#';
   bar[blen] = '\0';
@@ -352,6 +384,15 @@ void loop() {
     last_send = millis();
     sendImpact(peak, 0);
   }
+
+#if MONITOR_HZ > 0
+  // 대시보드 실시간 그래프. 충격이 아니어도 현재 수준을 계속 보낸다.
+  static uint32_t last_lv = 0;
+  if (millis() - last_lv > (1000UL / MONITOR_HZ)) {
+    last_lv = millis();
+    sendLevel(peak);
+  }
+#endif
 
 #if HEARTBEAT_SEC > 0
   // 두드리지 않아도 무선 경로를 확인할 수 있게 주기적으로 보낸다.

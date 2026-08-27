@@ -61,8 +61,8 @@ class State:
     """모든 스레드가 공유하는 상태. 락으로 보호한다."""
 
     def __init__(self, fusion_window: float, require_impact: bool,
-                 cooldown: float, impact_min_g: float = 1.5,
-                 fusion_mode: str = "soft", escalate_g: float = 2.5,
+                 cooldown: float, impact_min_g: float = 0.25,
+                 fusion_mode: str = "soft", escalate_g: float = 0.8,
                  no_impact_delay: float = 6.0):
         self.lock = threading.Lock()
         self.jpeg: bytes | None = None
@@ -102,6 +102,9 @@ class State:
         self.last_alarm_t = -1e9
         self.log: deque = deque(maxlen=40)
         self.impacts: deque = deque(maxlen=12)   # 최근 충격 이력
+        self.levels: deque = deque(maxlen=150)   # 실시간 진동 수준 (약 30초)
+        self.level_g = 0.0
+        self.level_t = 0.0
 
         self.bridge_ok: bool | None = None
         self.backend_url: str | None = None
@@ -153,6 +156,10 @@ class State:
             "impact_min_g": self.impact_min_g,
             "impact_fresh": age <= self.fusion_window,
             "impact_list": list(self.impacts),
+            "level_series": list(self.levels),
+            "level_g": round(self.level_g, 3),
+            "level_live": bool(self.level_t and
+                               time.time() - self.level_t < 3),
             "impact_batt": self.impact_batt,
             "impact_link": (None if not self.last_seen_t
                             else round(time.time() - self.last_seen_t, 1)),
@@ -213,6 +220,8 @@ def impact_reader(port: str, baud: int) -> None:
         STATE.note("info", f"진동 수신기 연결: {port}")
         try:
             for imp in _read_impacts(ser):
+                if imp is None:          # LEVEL 은 _read_impacts 안에서 처리된다
+                    continue
                 # 노드의 주기 하트비트는 중력(약 1.0g)만 싣고 온다.
                 # 이걸 충격으로 세면 항상 "최근 충격 있음" 이 되어 융합이 무의미해진다.
                 if imp.peak_g < STATE.impact_min_g:
@@ -245,9 +254,53 @@ def impact_reader(port: str, baud: int) -> None:
         time.sleep(2)   # 재연결
 
 
+LEVEL_RE = __import__("re").compile(
+    r"LEVEL\s+device=(?P<dev>\S+)\s+peak=(?P<peak>[\d.]+)\s+rssi=(?P<rssi>-?\d+)")
+
+
 def _read_impacts(ser):
-    from impact_test import read_impacts
-    return read_impacts(ser, echo_comments=False)
+    """수신기 시리얼을 읽는다.
+
+    IMPACT 줄은 impact_test 의 파서로 넘기고, LEVEL(실시간 수준) 줄은
+    여기서 바로 STATE 에 반영한 뒤 None 을 내보낸다. 두 줄이 같은 포트로
+    섞여 오므로 한 곳에서 갈라야 한다.
+    """
+    from impact_test import LINE_RE, Impact
+
+    while True:
+        try:
+            raw = ser.readline()
+        except Exception as exc:
+            STATE.note("error", f"시리얼 읽기 오류: {exc}")
+            return
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace").strip()
+        if not line or line.startswith("#"):
+            continue
+
+        lv = LEVEL_RE.search(line)
+        if lv:
+            g = float(lv.group("peak"))
+            now = time.time()
+            with STATE.lock:
+                STATE.level_g = g
+                STATE.level_t = now
+                STATE.last_seen_t = now
+                STATE.impact_rssi = int(lv.group("rssi"))
+                STATE.levels.append(round(g, 3))
+            yield None
+            continue
+
+        m = LINE_RE.search(line)
+        if not m:
+            continue
+        yield Impact(
+            device=m.group("dev"), seq=int(m.group("seq")),
+            peak_g=float(m.group("peak")), duration_ms=float(m.group("dur")),
+            rssi=int(m.group("rssi")), battery_mv=int(m.group("batt")),
+            t=time.time(),
+        )
 
 
 # ──────────────────────────────────────────────────────────── 융합 판정
@@ -540,6 +593,13 @@ li.info{color:var(--dim)}
 .improw b{font-variant-numeric:tabular-nums;width:46px;text-align:right}
 .improw .bar{flex:1;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
 .improw .bar i{display:block;height:100%;border-radius:3px}
+.lvhead{display:flex;align-items:baseline;gap:5px;margin-bottom:2px}
+.lvhead b{font-size:26px;font-variant-numeric:tabular-nums;line-height:1.1}
+.lvunit{color:var(--dim);font-size:13px;margin-right:6px}
+#lvchart{width:100%;height:64px;display:block;
+         background:rgba(255,255,255,.02);border-radius:6px}
+.lvax{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);
+      margin:2px 0 10px;font-variant-numeric:tabular-nums}
 </style></head><body>
 <div class="wrap">
   <div>
@@ -564,6 +624,20 @@ li.info{color:var(--dim)}
     </div>
     <div class="card">
       <h2>진동센서</h2>
+      <div id="vlive">
+        <div class="lvhead">
+          <b id="lvnum">—</b><span class="lvunit">g</span>
+          <span id="lvpill"></span>
+        </div>
+        <svg id="lvchart" viewBox="0 0 300 64" preserveAspectRatio="none"
+             role="img" aria-label="최근 30초 진동 수준">
+          <line id="lvthr" x1="0" x2="300" stroke="var(--warn)"
+                stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>
+          <polyline id="lvline" fill="none" stroke="var(--acc)" stroke-width="2"
+                    stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+        <div class="lvax"><span>30초 전</span><span id="lvmax">—</span><span>지금</span></div>
+      </div>
       <div id="vib"></div>
     </div>
     <div class="card">
@@ -627,7 +701,7 @@ async function tick(){
 
     // 충격 이력 — 4g 를 100% 로 보는 가로 막대
     let bars = s.impact_list.map(function(e){
-      const w = Math.max(4, Math.min(100, e.g / 4 * 100));
+      const w = Math.max(4, Math.min(100, e.g / 2 * 100));
       const c = e.g >= s.escalate_g ? 'var(--bad)' : 'var(--ok)';
       return '<div class="improw"><span class="t">'+e.t+'</span>'
         + '<span class="bar"><i style="width:'+w.toFixed(0)+'%;background:'+c+'"></i></span>'
@@ -637,6 +711,26 @@ async function tick(){
     if(!bars) bars = '<p class="t" style="margin:6px 0 0">아직 감지된 충격 없음</p>';
 
     document.getElementById('vib').innerHTML = vhead + bars;
+
+    // ── 실시간 진동 수준 그래프 (최근 30초)
+    const sr = s.level_series || [];
+    document.getElementById('lvnum').textContent =
+      s.level_live ? s.level_g.toFixed(2) : '—';
+    document.getElementById('lvpill').innerHTML = s.level_live
+      ? pill('실시간','p-ok')
+      : pill(sr.length ? '수신 끊김' : '모니터링 꺼짐', sr.length ? 'p-bad' : 'p-dim');
+
+    // 세로 축은 승격 문턱의 1.5배까지. 값이 그보다 크면 그만큼 늘린다.
+    const top = Math.max(s.escalate_g * 1.5, Math.max(0, ...sr) * 1.1, 0.3);
+    const y = v => 60 - Math.min(v / top, 1) * 56;
+    document.getElementById('lvthr').setAttribute('y1', y(s.escalate_g));
+    document.getElementById('lvthr').setAttribute('y2', y(s.escalate_g));
+    document.getElementById('lvline').setAttribute('points',
+      sr.map((v, i) => (i / Math.max(sr.length - 1, 1) * 300).toFixed(1)
+                       + ',' + y(v).toFixed(1)).join(' '));
+    document.getElementById('lvmax').textContent =
+      sr.length ? '최대 ' + Math.max(...sr).toFixed(2) + 'g · 승격선 '
+                  + s.escalate_g + 'g' : '';
 
     document.getElementById('log').innerHTML = s.log.map(e =>
       '<li class="'+e.kind+'"><span class="t">'+e.t+'</span><span>'+e.msg+'</span></li>'
@@ -888,16 +982,16 @@ def main() -> int:
                      default="soft",
                      help="진동센서가 판정에 개입하는 방식. "
                           "off=참고용, soft=승격/지연확인(기본), strict=충격 필수")
-    pre.add_argument("--escalate-g", type=float, default=2.5,
+    pre.add_argument("--escalate-g", type=float, default=0.8,
                      help="soft 모드에서 이 이상의 충격이면 '누움'도 낙상으로 승격")
     pre.add_argument("--no-impact-delay", type=float, default=6.0,
                      help="soft 모드에서 충격 없는 낙상은 이 시간 지켜본 뒤 알람(초)")
     pre.add_argument("--alarm-cooldown", type=float, default=180.0)
     pre.add_argument("--jpeg-quality", type=int, default=80,
                      help="스트림 JPEG 품질 1~100. 낮추면 대역폭이 줄어 끊김이 개선된다")
-    pre.add_argument("--impact-min-g", type=float, default=1.5,
-                     help="이 값 미만은 충격으로 세지 않는다. 노드의 주기 하트비트는 "
-                          "중력(약 1.0g)만 실어 오므로 걸러내야 한다")
+    pre.add_argument("--impact-min-g", type=float, default=0.25,
+                     help="이 값 미만은 충격으로 세지 않는다. 노드가 보내는 g 는 "
+                          "중력을 뺀 변화량이라 정지 상태에서는 0 근처다")
     known, rest = pre.parse_known_args()
 
     if "--display" not in rest:

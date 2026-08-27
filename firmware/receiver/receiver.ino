@@ -23,7 +23,9 @@
 // 송신 측 sensor_node.ino 의 ESPNOW_CHANNEL 과 반드시 같아야 한다.
 const uint8_t ESPNOW_CHANNEL = 1;
 
+// kind: 0 = 충격 이벤트, 1 = 실시간 수준 보고 (sensor_node.ino 와 반드시 일치)
 typedef struct __attribute__((packed)) {
+  uint8_t  kind;
   char     device_id[8];
   uint32_t seq;
   float    peak_g;
@@ -44,11 +46,21 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   m.device_id[sizeof(m.device_id) - 1] = '\0';
   rx_count++;
 
+  int rssi = info->rx_ctrl ? info->rx_ctrl->rssi : 0;
+
+  // 실시간 수준 보고는 별도 태그로 내보낸다. 충격 이벤트와 섞이면
+  // 대시보드가 초당 5번 "충격 발생" 을 띄우게 된다.
+  if (m.kind == 1) {
+    Serial.printf("LEVEL device=%s peak=%.3f rssi=%d\r\n",
+                  m.device_id, m.peak_g, rssi);
+    return;
+  }
+
   // 파싱하기 쉬운 한 줄 형식. 파이썬 쪽 impact_test.py 와 짝을 이룬다.
   // \r\n 으로 끝낸다. macOS 터미널(screen)에서 LF 만 보내면 줄이 계단처럼 밀린다.
   Serial.printf("IMPACT device=%s seq=%lu peak=%.2f dur=%.0f rssi=%d batt=%u\r\n",
                 m.device_id, (unsigned long)m.seq, m.peak_g, m.duration_ms,
-                info->rx_ctrl ? info->rx_ctrl->rssi : 0, m.battery_mv);
+                rssi, m.battery_mv);
 }
 
 void setup() {
