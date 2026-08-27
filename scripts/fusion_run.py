@@ -58,11 +58,13 @@ class State:
                  cooldown: float, impact_min_g: float = 1.5):
         self.lock = threading.Lock()
         self.jpeg: bytes | None = None
+        self.frame_ver = 0
 
         self.fusion_window = fusion_window
         self.require_impact = require_impact
         self.cooldown = cooldown
         self.impact_min_g = impact_min_g
+        self.jpeg_quality = 80
 
         self.last_impact_t = 0.0
         self.last_impact_g = 0.0
@@ -90,14 +92,23 @@ class State:
         self.started = time.time()
 
     def put_frame(self, img) -> None:
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        ok, buf = cv2.imencode(".jpg", img,
+                               [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         if ok:
             with self.lock:
                 self.jpeg = buf.tobytes()
+                self.frame_ver += 1
 
-    def get_frame(self) -> bytes | None:
+    def get_frame(self, since: int = -1) -> tuple[bytes | None, int]:
+        """since 이후의 새 프레임만 돌려준다.
+
+        Lepton 은 9fps 인데 예전에는 스트림이 20fps 로 같은 프레임을 계속
+        재전송했다. 대역폭만 두 배로 쓰고 화면은 나아지지 않는다.
+        """
         with self.lock:
-            return self.jpeg
+            if self.frame_ver == since:
+                return None, since
+            return self.jpeg, self.frame_ver
 
     def note(self, kind: str, msg: str) -> None:
         entry = {"t": time.strftime("%H:%M:%S"), "kind": kind, "msg": msg}
@@ -537,18 +548,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=f")
         self.end_headers()
+        ver = -1
         try:
             while True:
-                j = STATE.get_frame()
+                j, ver = STATE.get_frame(ver)
                 if j is None:
-                    time.sleep(0.05)
+                    time.sleep(0.02)      # 새 프레임 대기
                     continue
                 self.wfile.write(b"--f\r\nContent-Type: image/jpeg\r\n")
                 self.wfile.write(f"Content-Length: {len(j)}\r\n\r\n".encode())
                 self.wfile.write(j)
                 self.wfile.write(b"\r\n")
-                time.sleep(0.05)
-        except (BrokenPipeError, ConnectionResetError):
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
             pass
 
     def do_POST(self):
@@ -691,6 +703,8 @@ def main() -> int:
     pre.add_argument("--require-impact", action="store_true",
                      help="충격이 있어야만 알람 (오탐 최소화, 놓칠 위험 증가)")
     pre.add_argument("--alarm-cooldown", type=float, default=180.0)
+    pre.add_argument("--jpeg-quality", type=int, default=80,
+                     help="스트림 JPEG 품질 1~100. 낮추면 대역폭이 줄어 끊김이 개선된다")
     pre.add_argument("--impact-min-g", type=float, default=1.5,
                      help="이 값 미만은 충격으로 세지 않는다. 노드의 주기 하트비트는 "
                           "중력(약 1.0g)만 실어 오므로 걸러내야 한다")
@@ -725,6 +739,7 @@ def main() -> int:
     STATE = State(known.fusion_window, known.require_impact,
                   known.alarm_cooldown, known.impact_min_g)
     STATE.backend_url = backend_url
+    STATE.jpeg_quality = max(1, min(100, known.jpeg_quality))
 
     # GUI 호출을 대시보드로 돌린다
     cv2.imshow = lambda name, img: STATE.put_frame(img)
