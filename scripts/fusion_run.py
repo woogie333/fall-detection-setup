@@ -52,19 +52,21 @@ class State:
     """모든 스레드가 공유하는 상태. 락으로 보호한다."""
 
     def __init__(self, fusion_window: float, require_impact: bool,
-                 cooldown: float):
+                 cooldown: float, impact_min_g: float = 1.5):
         self.lock = threading.Lock()
         self.jpeg: bytes | None = None
 
         self.fusion_window = fusion_window
         self.require_impact = require_impact
         self.cooldown = cooldown
+        self.impact_min_g = impact_min_g
 
         self.last_impact_t = 0.0
         self.last_impact_g = 0.0
         self.impact_count = 0
         self.impact_rssi = 0
         self.impact_batt = 0
+        self.last_seen_t = 0.0     # 하트비트 포함 마지막 수신 (생존 확인용)
 
         self.thermal_events = 0      # DANGER EVENT 횟수
         self.heartbeats = 0
@@ -108,6 +110,7 @@ class State:
             "impact_age": None if age > 1e8 else round(age, 1),
             "impact_g": round(self.last_impact_g, 2),
             "impact_rssi": self.impact_rssi,
+            "impact_min_g": self.impact_min_g,
             "impact_fresh": age <= self.fusion_window,
             "thermal_events": self.thermal_events,
             "heartbeats": self.heartbeats,
@@ -149,6 +152,13 @@ def impact_reader(port: str, baud: int) -> None:
         STATE.note("info", f"진동 수신기 연결: {port}")
         try:
             for imp in _read_impacts(ser):
+                # 노드의 주기 하트비트는 중력(약 1.0g)만 싣고 온다.
+                # 이걸 충격으로 세면 항상 "최근 충격 있음" 이 되어 융합이 무의미해진다.
+                if imp.peak_g < STATE.impact_min_g:
+                    with STATE.lock:
+                        STATE.impact_rssi = imp.rssi
+                        STATE.last_seen_t = imp.t
+                    continue
                 with STATE.lock:
                     STATE.last_impact_t = imp.t
                     STATE.last_impact_g = imp.peak_g
@@ -416,7 +426,22 @@ def fix_frame(frame):
     return a
 
 
-def lepton_frames(idx, y16):
+def lepton_frames(idx, y16, reconnect_wait=3.0):
+    """lepton_live.camera_source 대체.
+
+    최신 bbox 브랜치는 (idx, y16, reconnect_wait) 3인자로 부른다.
+    카메라가 빠지면 reconnect_wait 초 간격으로 재연결을 시도한다.
+    """
+    while True:
+        try:
+            yield from _one_session(idx, y16)
+        except RuntimeError as exc:
+            STATE.note("error", f"{exc}")
+        STATE.note("info", f"{reconnect_wait:.0f}초 후 카메라 재연결 시도")
+        time.sleep(max(reconnect_wait, 1.0))
+
+
+def _one_session(idx, y16):
     cap = cv2.VideoCapture(int(idx), cv2.CAP_V4L2)
     if not cap.isOpened():
         raise RuntimeError(f"/dev/video{idx} 를 열 수 없습니다")
@@ -489,12 +514,16 @@ def main() -> int:
     pre.add_argument("--require-impact", action="store_true",
                      help="충격이 있어야만 알람 (오탐 최소화, 놓칠 위험 증가)")
     pre.add_argument("--alarm-cooldown", type=float, default=180.0)
+    pre.add_argument("--impact-min-g", type=float, default=1.5,
+                     help="이 값 미만은 충격으로 세지 않는다. 노드의 주기 하트비트는 "
+                          "중력(약 1.0g)만 실어 오므로 걸러내야 한다")
     known, rest = pre.parse_known_args()
 
     if "--display" not in rest:
         rest.append("--display")
 
-    STATE = State(known.fusion_window, known.require_impact, known.alarm_cooldown)
+    STATE = State(known.fusion_window, known.require_impact,
+                  known.alarm_cooldown, known.impact_min_g)
 
     # GUI 호출을 대시보드로 돌린다
     cv2.imshow = lambda name, img: STATE.put_frame(img)
@@ -546,7 +575,9 @@ def main() -> int:
 
     def _build(**kw):
         if known.impact_port:
-            fresh = STATE.impact_age() <= 60         # 1분 내 수신 = 살아 있음
+            with STATE.lock:
+                seen = STATE.last_seen_t
+            fresh = (time.time() - seen) <= 60 if seen else False
             kw["sensor_health"] = dict(kw.get("sensor_health", {}))
             kw["sensor_health"]["vibrator"] = "OK" if fresh else "FAIL"
             with STATE.lock:
