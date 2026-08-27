@@ -61,7 +61,9 @@ class State:
     """모든 스레드가 공유하는 상태. 락으로 보호한다."""
 
     def __init__(self, fusion_window: float, require_impact: bool,
-                 cooldown: float, impact_min_g: float = 1.5):
+                 cooldown: float, impact_min_g: float = 1.5,
+                 fusion_mode: str = "soft", escalate_g: float = 2.5,
+                 no_impact_delay: float = 6.0):
         self.lock = threading.Lock()
         self.jpeg: bytes | None = None
         self.frame_ver = 0
@@ -71,6 +73,17 @@ class State:
         self.cooldown = cooldown
         self.impact_min_g = impact_min_g
         self.jpeg_quality = 80
+
+        # 진동이 판정에 개입하는 방식
+        #   off    — 참고용. 열화상 판정 그대로 (예전 기본값)
+        #   soft   — 충격 있으면 승격/즉시, 없으면 지연 확인 (기본)
+        #   strict — 충격 없으면 알람 안 냄 (--require-impact 와 동일)
+        self.fusion_mode = "strict" if require_impact else fusion_mode
+        self.escalate_g = escalate_g          # 이 이상이면 WARNING 도 낙상으로 승격
+        self.no_impact_delay = no_impact_delay
+        self.escalations = 0                  # 진동이 만들어낸 알람 수
+        self.deferred = 0                     # 진동 없어서 지연된 건수
+        self.pending: dict | None = None       # 확인 대기 중인 DANGER
 
         self.last_impact_t = 0.0
         self.last_impact_g = 0.0
@@ -88,6 +101,7 @@ class State:
         self.suppressed = 0
         self.last_alarm_t = -1e9
         self.log: deque = deque(maxlen=40)
+        self.impacts: deque = deque(maxlen=12)   # 최근 충격 이력
 
         self.bridge_ok: bool | None = None
         self.backend_url: str | None = None
@@ -128,6 +142,7 @@ class State:
     def snapshot(self) -> dict:
         with self.lock:
             log = list(self.log)
+            pending = dict(self.pending) if self.pending else None
         age = self.impact_age()
         return {
             "uptime": int(time.time() - self.started),
@@ -137,6 +152,10 @@ class State:
             "impact_rssi": self.impact_rssi,
             "impact_min_g": self.impact_min_g,
             "impact_fresh": age <= self.fusion_window,
+            "impact_list": list(self.impacts),
+            "impact_batt": self.impact_batt,
+            "impact_link": (None if not self.last_seen_t
+                            else round(time.time() - self.last_seen_t, 1)),
             "thermal_events": self.thermal_events,
             "heartbeats": self.heartbeats,
             "event_type": self.last_event_type,
@@ -144,6 +163,15 @@ class State:
             "alarms": self.alarms,
             "suppressed": self.suppressed,
             "require_impact": self.require_impact,
+            "fusion_mode": self.fusion_mode,
+            "escalate_g": self.escalate_g,
+            "escalations": self.escalations,
+            "deferred": self.deferred,
+            "no_impact_delay": self.no_impact_delay,
+            "pending": (None if not pending else
+                        {"reason": pending.get("reason", ""),
+                         "remain": max(0.0, round(
+                             pending["due"] - time.time(), 1))}),
             "fusion_window": self.fusion_window,
             "bridge_ok": self.bridge_ok,
             "backend_url": self.backend_url,
@@ -198,6 +226,13 @@ def impact_reader(port: str, baud: int) -> None:
                     STATE.impact_count += 1
                     STATE.impact_rssi = imp.rssi
                     STATE.impact_batt = imp.battery_mv // 30 if imp.battery_mv else 0
+                with STATE.lock:
+                    STATE.impacts.appendleft({
+                        "t": time.strftime("%H:%M:%S", time.localtime(imp.t)),
+                        "g": round(imp.peak_g, 2),
+                        "rssi": imp.rssi,
+                        "dur": round(imp.duration_ms),
+                    })
                 STATE.note("impact",
                            f"충격 {imp.peak_g:.2f}g  rssi={imp.rssi}dBm  ({imp.device})")
         except Exception as exc:
@@ -356,44 +391,80 @@ def on_webhook(payload: dict, bridge: str | None, device: str,
         STATE.note("info", f"상태 변화 → {etype}"
                    + (f"  → 백엔드 전송" if STATE.backend_url else ""))
 
-    # 낙상(DANGER) 진입 순간에만 융합 판정
-    if not (rtype == "EVENT" and etype == "DANGER"):
+    if rtype != "EVENT":
         return
 
-    now = time.time()
+    # 사람이 다시 일어났다 → 대기 중이던 판정은 취소한다.
+    if etype == "SAFE":
+        with STATE.lock:
+            had = STATE.pending is not None
+            STATE.pending = None
+        if had:
+            STATE.note("info", "대기 중이던 판정 취소 — 스스로 일어남")
+        return
+
+    seq = payload.get("seq", "?")
     age = STATE.impact_age()
     fresh = age <= STATE.fusion_window
+    strong = fresh and STATE.last_impact_g >= STATE.escalate_g
+    imp_txt = (f"충격 {STATE.last_impact_g:.2f}g ({age:.1f}초 전)"
+               if fresh else "충격 없음")
+
+    # ── WARNING(누움): 강한 충격이 있으면 낙상으로 승격한다.
+    if etype == "WARNING":
+        if STATE.fusion_mode != "off" and strong:
+            with STATE.lock:
+                STATE.escalations += 1
+            fire_alarm(f"누움 + {imp_txt} → 낙상 승격 (seq={seq})",
+                       "높음", bridge, device)
+        return
+
+    if etype != "DANGER":
+        return
 
     with STATE.lock:
         STATE.thermal_events += 1
+    detail = f"열화상 DANGER (seq={seq})  {imp_txt}"
 
-    detail = f"열화상 DANGER (seq={payload.get('seq', '?')})"
-
-    if fresh:
-        detail += f" + 충격 {STATE.last_impact_g:.2f}g ({age:.1f}초 전)"
-    else:
-        detail += "  충격 없음"
-
-    # 충격 필수 모드에서 충격이 없으면 보류
-    if STATE.require_impact and not fresh:
-        with STATE.lock:
-            STATE.suppressed += 1
-        STATE.note("hold", f"{detail} → 보류 (--require-impact)")
+    if fresh or STATE.fusion_mode == "off":
+        fire_alarm(detail, "높음" if fresh else "보통", bridge, device)
         return
 
-    # 쿨다운
-    if now - STATE.last_alarm_t < STATE.cooldown:
+    # 여기부터는 "열화상은 낙상이라는데 충격이 없다" 는 상황
+    if STATE.fusion_mode == "strict":
         with STATE.lock:
             STATE.suppressed += 1
-        remain = STATE.cooldown - (now - STATE.last_alarm_t)
-        STATE.note("hold", f"{detail} → 억제 (쿨다운 {remain:.0f}초 남음)")
+        STATE.note("hold", f"{detail} → 보류 (충격 필수 모드)")
         return
 
+    # soft: 바로 버리지도, 바로 울리지도 않는다. 잠시 지켜본다.
     with STATE.lock:
-        STATE.last_alarm_t = now
-        STATE.alarms += 1
+        STATE.deferred += 1
+        STATE.pending = {"due": time.time() + STATE.no_impact_delay,
+                         "detail": detail, "reason": "충격 없음",
+                         "bridge": bridge, "device": device}
+    STATE.note("hold",
+               f"{detail} → {STATE.no_impact_delay:.0f}초 지켜봄 "
+               f"(일어나면 취소, 계속 쓰러져 있으면 알람)")
 
-    conf = "높음" if fresh else "보통"
+
+def fire_alarm(detail: str, conf: str, bridge: str | None, device: str) -> None:
+    """쿨다운을 확인하고 실제로 알람을 내보낸다."""
+    now = time.time()
+    with STATE.lock:
+        STATE.pending = None
+        if now - STATE.last_alarm_t < STATE.cooldown:
+            STATE.suppressed += 1
+            remain = STATE.cooldown - (now - STATE.last_alarm_t)
+            hold = f"{detail} → 억제 (쿨다운 {remain:.0f}초 남음)"
+        else:
+            hold = None
+            STATE.last_alarm_t = now
+            STATE.alarms += 1
+    if hold:
+        STATE.note("hold", hold)
+        return
+
     STATE.note("alarm", f"★ 낙상 알람 [{conf}]  {detail}")
 
     if bridge:
@@ -402,6 +473,25 @@ def on_webhook(payload: dict, bridge: str | None, device: str,
             STATE.bridge_ok = ok
         STATE.note("alarm" if ok else "error",
                    "SmartThings 전송 성공" if ok else "SmartThings 전송 실패")
+
+
+def pending_watcher() -> None:
+    """지연 판정을 감시한다. 시간이 지나도 계속 DANGER 면 알람."""
+    while True:
+        time.sleep(0.5)
+        now = time.time()
+        with STATE.lock:
+            p = STATE.pending
+            due = bool(p and now >= p["due"])
+            if due:
+                STATE.pending = None
+        if not due:
+            continue
+        if STATE.last_event_type != "DANGER":
+            STATE.note("info", "대기 중이던 판정 취소 — 상태가 풀림")
+            continue
+        fire_alarm(p["detail"] + " · 계속 쓰러진 상태", "보통",
+                   p["bridge"], p["device"])
 
 
 # ──────────────────────────────────────────────────────────── 대시보드
@@ -445,6 +535,11 @@ li.info{color:var(--dim)}
 .btn-primary{background:rgba(217,112,102,.16);border-color:rgba(217,112,102,.4);color:var(--bad)}
 .btn-primary:hover{background:rgba(217,112,102,.26)}
 .btn:disabled{opacity:.5;cursor:default}
+.improw{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px}
+.improw .t{color:var(--dim);font-variant-numeric:tabular-nums;flex-shrink:0}
+.improw b{font-variant-numeric:tabular-nums;width:46px;text-align:right}
+.improw .bar{flex:1;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.improw .bar i{display:block;height:100%;border-radius:3px}
 </style></head><body>
 <div class="wrap">
   <div>
@@ -466,6 +561,10 @@ li.info{color:var(--dim)}
         <button id="test" class="btn btn-primary">테스트 알림</button>
       </div>
       <p id="tres" style="font-size:12.5px;color:var(--dim);margin:0;min-height:18px"></p>
+    </div>
+    <div class="card">
+      <h2>진동센서</h2>
+      <div id="vib"></div>
     </div>
     <div class="card">
       <h2>이벤트</h2>
@@ -494,9 +593,6 @@ async function tick(){
     else bk = pill(s.backend_sent+'건 전송','p-ok');
 
     document.getElementById('stat').innerHTML =
-      row('최근 충격', imp) +
-      row('충격 누적', s.impact_count + ' 회') +
-      row('신호 세기', s.impact_rssi ? s.impact_rssi+' dBm' : '—') +
       row('현재 상태', s.event_type) +
       row('열화상 상태', s.thermal_health) +
       row('열화상 낙상', s.thermal_events + ' 회') +
@@ -506,8 +602,41 @@ async function tick(){
       row('SmartThings', br) +
       row('백엔드', bk) +
       row('융합 창', s.fusion_window + ' 초') +
-      row('충격 필수', s.require_impact ? pill('ON','p-warn') : pill('OFF','p-dim')) +
       row('가동 시간', s.uptime + ' 초');
+
+    // ── 진동센서 카드
+    const MODE = {off:['참고용','p-dim'], soft:['융합 (soft)','p-ok'],
+                  strict:['충격 필수','p-warn']}[s.fusion_mode] || ['—','p-dim'];
+    let link;
+    if(s.impact_link===null) link = pill('수신 없음','p-bad');
+    else if(s.impact_link < 30) link = pill('정상 · '+s.impact_link+'초 전','p-ok');
+    else link = pill(s.impact_link+'초 전','p-warn');
+
+    let vhead =
+      row('판정 개입', pill(MODE[0], MODE[1])) +
+      row('최근 충격', imp) +
+      row('충격 누적', s.impact_count + ' 회') +
+      row('승격 알람', s.escalations + ' 회') +
+      row('지연 확인', s.deferred + ' 회') +
+      row('링크', link) +
+      row('신호 세기', s.impact_rssi ? s.impact_rssi+' dBm' : '—') +
+      row('감지 문턱', s.impact_min_g + ' g / 승격 ' + s.escalate_g + ' g');
+
+    if(s.pending) vhead += row('확인 대기',
+      pill(s.pending.reason + ' · ' + s.pending.remain + '초', 'p-warn'));
+
+    // 충격 이력 — 4g 를 100% 로 보는 가로 막대
+    let bars = s.impact_list.map(function(e){
+      const w = Math.max(4, Math.min(100, e.g / 4 * 100));
+      const c = e.g >= s.escalate_g ? 'var(--bad)' : 'var(--ok)';
+      return '<div class="improw"><span class="t">'+e.t+'</span>'
+        + '<span class="bar"><i style="width:'+w.toFixed(0)+'%;background:'+c+'"></i></span>'
+        + '<b>'+e.g.toFixed(2)+'g</b>'
+        + '<span class="t">'+(e.rssi?e.rssi+'dBm':'')+'</span></div>';
+    }).join('');
+    if(!bars) bars = '<p class="t" style="margin:6px 0 0">아직 감지된 충격 없음</p>';
+
+    document.getElementById('vib').innerHTML = vhead + bars;
 
     document.getElementById('log').innerHTML = s.log.map(e =>
       '<li class="'+e.kind+'"><span class="t">'+e.t+'</span><span>'+e.msg+'</span></li>'
@@ -755,6 +884,14 @@ def main() -> int:
                      help="열화상 낙상 전후 이 시간 안의 충격을 같은 사건으로 본다(초)")
     pre.add_argument("--require-impact", action="store_true",
                      help="충격이 있어야만 알람 (오탐 최소화, 놓칠 위험 증가)")
+    pre.add_argument("--fusion-mode", choices=("off", "soft", "strict"),
+                     default="soft",
+                     help="진동센서가 판정에 개입하는 방식. "
+                          "off=참고용, soft=승격/지연확인(기본), strict=충격 필수")
+    pre.add_argument("--escalate-g", type=float, default=2.5,
+                     help="soft 모드에서 이 이상의 충격이면 '누움'도 낙상으로 승격")
+    pre.add_argument("--no-impact-delay", type=float, default=6.0,
+                     help="soft 모드에서 충격 없는 낙상은 이 시간 지켜본 뒤 알람(초)")
     pre.add_argument("--alarm-cooldown", type=float, default=180.0)
     pre.add_argument("--jpeg-quality", type=int, default=80,
                      help="스트림 JPEG 품질 1~100. 낮추면 대역폭이 줄어 끊김이 개선된다")
@@ -791,7 +928,11 @@ def main() -> int:
             rest[j + 1] = device_id      # lepton_live 에도 치환된 값을 넘긴다
 
     STATE = State(known.fusion_window, known.require_impact,
-                  known.alarm_cooldown, known.impact_min_g)
+                  known.alarm_cooldown, known.impact_min_g,
+                  fusion_mode=known.fusion_mode,
+                  escalate_g=known.escalate_g,
+                  no_impact_delay=known.no_impact_delay)
+    threading.Thread(target=pending_watcher, daemon=True).start()
     STATE.backend_url = backend_url
     STATE.jpeg_quality = max(1, min(100, known.jpeg_quality))
 
