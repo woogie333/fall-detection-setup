@@ -25,6 +25,12 @@ lepton_live.py(experiment-bbox 브랜치)를 그대로 구동하되,
   # 백엔드 서버는 기본으로 켜져 있다 (cherry-fall.duckdns.org).
   # 다른 주소로 바꾸려면 --webhook <URL>, 끄려면 --webhook none
 
+  # 백엔드가 device_id 로 보드 MAC 을 요구하면 auto 로 자동 입력
+  python3 fusion_run.py ... --device-id auto          # 예: 1C:DB:D4:F0:DE:44
+  python3 fusion_run.py ... --device-id auto:lower    # 소문자
+  python3 fusion_run.py ... --device-id auto:plain    # 콜론 없이
+  python3 fusion_run.py ... --device-id auto:eth0     # 인터페이스 지정
+
   # 진동 충격이 있어야만 알람 (오탐 최소화)
   python3 fusion_run.py ... --require-impact
 
@@ -674,6 +680,53 @@ def _one_session(idx, y16):
 
 # ──────────────────────────────────────────────────────────── 메인
 
+def read_mac(iface: str) -> str | None:
+    """인터페이스의 MAC 주소를 읽는다."""
+    try:
+        with open(f"/sys/class/net/{iface}/address") as f:
+            m = f.read().strip()
+        return m if m and m != "00:00:00:00:00:00" else None
+    except OSError:
+        return None
+
+
+def resolve_device_id(value: str, iface_pref: str = "") -> str:
+    """--device-id 가 auto/mac 이면 보드 MAC 으로 치환한다.
+
+    백엔드가 device_id 로 보드 MAC 을 요구하는 경우, 손으로 적다가
+    한 글자만 틀려도 매칭이 안 된다. 자동으로 읽어 넣는 편이 안전하다.
+
+    형식 지정:
+      auto        기본 인터페이스(현재 통신 중)의 MAC, 대문자 콜론 구분
+      auto:eth0   특정 인터페이스 지정
+      auto:lower  소문자
+      auto:plain  콜론 없이
+    """
+    if not value or value.split(":")[0].lower() not in ("auto", "mac"):
+        return value
+
+    opts = [o.lower() for o in value.split(":")[1:]]
+    lower = "lower" in opts
+    plain = "plain" in opts or "nocolon" in opts
+    named = [o for o in opts if o not in ("lower", "plain", "nocolon")]
+
+    order = ([named[0]] if named else
+             ([iface_pref] if iface_pref else []) + ["wlan0", "eth0", "end0"])
+    mac = None
+    for i in order:
+        mac = read_mac(i)
+        if mac:
+            break
+    if not mac:
+        print("  ⚠ MAC 을 읽지 못했습니다. --device-id 를 직접 지정하세요.")
+        return value
+
+    mac = mac.lower() if lower else mac.upper()
+    if plain:
+        mac = mac.replace(":", "")
+    return mac
+
+
 def lan_ip() -> str:
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -734,7 +787,8 @@ def main() -> int:
     if "--device-id" in rest:
         j = rest.index("--device-id")
         if j + 1 < len(rest):
-            device_id = rest[j + 1]
+            device_id = resolve_device_id(rest[j + 1])
+            rest[j + 1] = device_id      # lepton_live 에도 치환된 값을 넘긴다
 
     STATE = State(known.fusion_window, known.require_impact,
                   known.alarm_cooldown, known.impact_min_g)
@@ -760,6 +814,7 @@ def main() -> int:
     print(f"  진동센서:  {known.impact_port or '없음 (열화상만)'}")
     print(f"  SmartThings: {known.bridge + '/' + known.device if known.bridge else '없음'}")
     print(f"  백엔드 서버: {backend_url or '없음 (--webhook none)'}")
+    print(f"  device_id:   {device_id}")
     print(f"  융합 창: {known.fusion_window}초"
           f"{'  · 충격 필수' if known.require_impact else ''}")
     print(f"  종료: Ctrl+C")
