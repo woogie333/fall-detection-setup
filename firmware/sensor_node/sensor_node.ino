@@ -26,14 +26,30 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_sleep.h>
+#include <esp_wifi.h>
+#include <esp_idf_version.h>
 
 // ─── 설정 ──────────────────────────────────────────────────────────
 
 #define DEBUG_MODE 1        // 1 = 안 자고 계속 측정값 출력 (개발용)
                             // 0 = 딥슬립 + 인터럽트 (실사용)
 
-// 수신기 XIAO 의 MAC 주소. receiver 스케치를 먼저 올려 시리얼에 찍힌 값을 넣으세요.
-uint8_t RECEIVER_MAC[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };  // 브로드캐스트(임시)
+// ── 무선 디버깅용 ──────────────────────────────────────────────────
+#define USE_BROADCAST 0     // 1 = 특정 MAC 대신 브로드캐스트로 전송.
+                            //     수신기에 뜨면 MAC 문제, 안 뜨면 채널/무선 문제.
+                            //     원인 확인이 끝나면 0 으로 되돌리세요.
+
+#define HEARTBEAT_SEC 3     // DEBUG_MODE 에서 이 주기로 자동 전송 (0 = 끔).
+                            //     두드리지 않아도 무선 경로를 확인할 수 있다.
+// ───────────────────────────────────────────────────────────────────
+
+// 수신기 XIAO 의 MAC 주소. receiver 스케치의 시리얼 출력에서 확인한 값.
+uint8_t RECEIVER_MAC[6] =
+#if USE_BROADCAST
+    { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };   // 브로드캐스트 (디버깅용)
+#else
+    { 0x1C, 0xDB, 0xD4, 0xF0, 0xDE, 0x44 };   // 수신기 실제 MAC
+#endif
 
 const uint8_t PIN_INT1   = 3;      // D1
 const uint8_t ADXL_ADDR  = 0x53;   // SDO=GND
@@ -44,6 +60,10 @@ const uint8_t ACT_THRESHOLD = 32;
 
 const uint16_t CAPTURE_MS = 400;   // 깨어난 뒤 파형을 볼 시간
 const char*    DEVICE_ID  = "vib-01";
+
+// ESP-NOW 는 송수신이 같은 채널에 있어야 한다. 양쪽 스케치의 값을 일치시킬 것.
+// 수신기 시리얼에 찍히는 "# 채널:" 값과 같아야 한다.
+const uint8_t  ESPNOW_CHANNEL = 1;
 
 // ─── ADXL345 레지스터 ──────────────────────────────────────────────
 
@@ -112,7 +132,8 @@ bool adxlBegin() {
 
   adxlWrite(REG_POWER_CTL, 0x00);      // 대기
   adxlWrite(REG_DATA_FORMAT, 0x0B);    // full-res, ±16g
-  adxlWrite(REG_BW_RATE, 0x0A);        // 100 Hz
+  // ⚠ 800Hz. 100Hz(0x0A)로 두면 20~50ms 짜리 충격을 통째로 놓친다.
+  adxlWrite(REG_BW_RATE, 0x0D);        // 800 Hz
 
   // Activity 인터럽트: 임계 초과 시 INT1 을 HIGH 로
   adxlWrite(REG_THRESH_ACT, ACT_THRESHOLD);
@@ -127,20 +148,61 @@ bool adxlBegin() {
 
 // ─── ESP-NOW ───────────────────────────────────────────────────────
 
+volatile bool     last_delivered = false;
+volatile bool     got_result = false;
+
+// 실제 도달 여부는 이 콜백으로만 알 수 있다.
+// esp_now_send() 의 반환값은 "큐에 넣었다" 는 뜻일 뿐이다.
+//
+// ESP-IDF 5.4 부터 첫 인자가 const uint8_t* mac 에서
+// const wifi_tx_info_t* 로 바뀌었다. 두 버전 모두에서 빌드되게 분기한다.
+#if defined(ESP_IDF_VERSION) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 0)
+void onSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+#else
+void onSent(const uint8_t *mac, esp_now_send_status_t status) {
+#endif
+  last_delivered = (status == ESP_NOW_SEND_SUCCESS);
+  got_result = true;
+}
+
 bool espnowBegin() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  delay(100);
+
+  // 채널을 명시적으로 맞춘다. 이게 어긋나면 패킷이 조용히 사라진다.
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW 초기화 실패");
     return false;
   }
+  esp_now_register_send_cb(onSent);
+
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, RECEIVER_MAC, 6);
-  peer.channel = 0;
+  peer.channel = 0;              // 0 = 현재 채널 사용. 명시값보다 안전하다.
+  peer.ifidx   = WIFI_IF_STA;    // ⚠ 이걸 빼면 일부 코어에서 조용히 실패한다
   peer.encrypt = false;
-  if (esp_now_add_peer(&peer) != ESP_OK) {
-    Serial.println("ESP-NOW peer 등록 실패");
+  esp_now_del_peer(RECEIVER_MAC);          // 재등록 시 충돌 방지
+  esp_err_t pe = esp_now_add_peer(&peer);
+  if (pe != ESP_OK) {
+    Serial.printf("ESP-NOW peer 등록 실패 (err=%d)\n", pe);
     return false;
+  }
+
+  // 설정이 실제로 먹었는지 확인 — WiFi.disconnect() 가 채널을 되돌리는 경우가 있다
+  uint8_t ch; wifi_second_chan_t sc;
+  esp_wifi_get_channel(&ch, &sc);
+  Serial.printf("ESP-NOW 준비 — 실제 채널 %u (설정값 %u), 내 MAC %s\n",
+                ch, ESPNOW_CHANNEL, WiFi.macAddress().c_str());
+  Serial.printf("  대상 %02X:%02X:%02X:%02X:%02X:%02X\n",
+                RECEIVER_MAC[0], RECEIVER_MAC[1], RECEIVER_MAC[2],
+                RECEIVER_MAC[3], RECEIVER_MAC[4], RECEIVER_MAC[5]);
+  if (ch != ESPNOW_CHANNEL) {
+    Serial.println("  ⚠ 채널이 설정과 다릅니다 — 이게 도달 실패의 원인일 수 있습니다");
   }
   return true;
 }
@@ -153,10 +215,29 @@ void sendImpact(float peak_g, float dur_ms) {
   m.duration_ms = dur_ms;
   m.battery_mv = 0;
 
+  got_result = false;
   esp_err_t r = esp_now_send(RECEIVER_MAC, (uint8_t *)&m, sizeof(m));
-  Serial.printf("전송 %s  peak=%.2fg dur=%.0fms\n",
-                r == ESP_OK ? "OK" : "실패", peak_g, dur_ms);
-  delay(50);   // 전송 완료 대기
+
+  if (r != ESP_OK) {
+    Serial.printf("전송 호출 실패 (err=%d)  peak=%.2fg\n", r, peak_g);
+    return;
+  }
+
+  // 콜백을 기다린다. 이게 실제 도달 여부다.
+  uint32_t t0 = millis();
+  while (!got_result && millis() - t0 < 300) delay(5);
+
+  if (!got_result) {
+    Serial.printf("전송 결과 없음 (타임아웃)  peak=%.2fg\n", peak_g);
+  } else if (last_delivered) {
+#if USE_BROADCAST
+    Serial.printf("→ 브로드캐스트 송출  peak=%.2fg  (수신기 쪽에서 확인하세요)\n", peak_g);
+#else
+    Serial.printf("★ 도달 성공  peak=%.2fg dur=%.0fms\n", peak_g, dur_ms);
+#endif
+  } else {
+    Serial.printf("✗ 도달 실패 — 수신기가 꺼져 있거나 채널/MAC 불일치  peak=%.2fg\n", peak_g);
+  }
 }
 
 // ─── 충격 파형 측정 ────────────────────────────────────────────────
@@ -179,7 +260,7 @@ void captureImpact(float &peak_g, float &dur_ms) {
       over_total += millis() - over_start;
       over_start = 0;
     }
-    delay(5);
+    delayMicroseconds(500);   // 800Hz 센서에 맞춰 촘촘히 읽는다
   }
   if (over_start) over_total += millis() - over_start;
   dur_ms = over_total;
@@ -194,6 +275,7 @@ void setup() {
   boot_count++;
   pinMode(PIN_INT1, INPUT);
   Wire.begin();
+  Wire.setClock(400000);   // 접촉 불량으로 읽기 실패가 잦으면 100000 으로 낮추세요
 
   if (!adxlBegin()) {
     Serial.println("센서 초기화 실패 — 10초 후 재시도");
@@ -238,18 +320,46 @@ void loop() {
   if (!DEBUG_MODE) return;   // 실사용 경로는 setup 에서 잠든다
 
   static uint32_t last_send = 0;
-  int16_t x, y, z;
-  adxlReadXYZ(x, y, z);
-  float gx = toG(x), gy = toG(y), gz = toG(z);
-  float mag = sqrtf(gx * gx + gy * gy + gz * gz);
-  bool over = mag >= ACT_THRESHOLD * 0.0625f;
 
-  Serial.printf("x=%+6.2f y=%+6.2f z=%+6.2f  |mag|=%5.2fg  INT1=%d %s\n",
-                gx, gy, gz, mag, digitalRead(PIN_INT1), over ? "<<< 충격" : "");
+  // 300ms 창에서 최대한 빨리 읽어 피크를 잡는다.
+  // 한 번씩 띄엄띄엄 읽으면 짧은 충격을 놓친다.
+  float gx = 0, gy = 0, gz = 0, peak = 0;
+  uint32_t samples = 0;
+  uint32_t t_end = millis() + 300;
+  while (millis() < t_end) {
+    int16_t x, y, z;
+    adxlReadXYZ(x, y, z);
+    gx = toG(x); gy = toG(y); gz = toG(z);
+    float m = sqrtf(gx * gx + gy * gy + gz * gz);
+    if (m > peak) peak = m;
+    samples++;
+  }
+
+  const float TRIG_G = ACT_THRESHOLD * 0.0625f;
+  bool over = peak >= TRIG_G;
+
+  char bar[41];
+  int blen = (int)(peak * 8);
+  if (blen > 40) blen = 40;
+  for (int i = 0; i < blen; i++) bar[i] = '#';
+  bar[blen] = '\0';
+
+  Serial.printf("x=%+5.2f y=%+5.2f z=%+5.2f  peak=%5.2fg (임계 %.2fg, %lu샘플) INT1=%d %s%s\n",
+                gx, gy, gz, peak, TRIG_G, samples,
+                digitalRead(PIN_INT1), bar, over ? "  <<< 충격" : "");
 
   if (over && millis() - last_send > 2000) {
     last_send = millis();
-    sendImpact(mag, 0);
+    sendImpact(peak, 0);
   }
-  delay(100);
+
+#if HEARTBEAT_SEC > 0
+  // 두드리지 않아도 무선 경로를 확인할 수 있게 주기적으로 보낸다.
+  static uint32_t last_hb = 0;
+  if (millis() - last_hb > HEARTBEAT_SEC * 1000UL) {
+    last_hb = millis();
+    Serial.print("[하트비트] ");
+    sendImpact(peak, 0);
+  }
+#endif
 }

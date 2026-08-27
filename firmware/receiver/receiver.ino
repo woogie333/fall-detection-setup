@@ -18,6 +18,10 @@
 
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>
+
+// 송신 측 sensor_node.ino 의 ESPNOW_CHANNEL 과 반드시 같아야 한다.
+const uint8_t ESPNOW_CHANNEL = 1;
 
 typedef struct __attribute__((packed)) {
   char     device_id[8];
@@ -41,7 +45,8 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   rx_count++;
 
   // 파싱하기 쉬운 한 줄 형식. 파이썬 쪽 impact_test.py 와 짝을 이룬다.
-  Serial.printf("IMPACT device=%s seq=%lu peak=%.2f dur=%.0f rssi=%d batt=%u\n",
+  // \r\n 으로 끝낸다. macOS 터미널(screen)에서 LF 만 보내면 줄이 계단처럼 밀린다.
+  Serial.printf("IMPACT device=%s seq=%lu peak=%.2f dur=%.0f rssi=%d batt=%u\r\n",
                 m.device_id, (unsigned long)m.seq, m.peak_g, m.duration_ms,
                 info->rx_ctrl ? info->rx_ctrl->rssi : 0, m.battery_mv);
 }
@@ -52,14 +57,21 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  delay(100);
+
+  // 채널 고정. 송신 측과 같아야 패킷이 도달한다.
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
 
   Serial.println();
   Serial.println("# ESP-NOW 수신기");
   Serial.print("# 내 MAC: ");
   Serial.println(WiFi.macAddress());
   Serial.println("# 이 주소를 sensor_node.ino 의 RECEIVER_MAC 에 넣으세요.");
-  Serial.print("# 채널: ");
-  Serial.println(WiFi.channel());
+  uint8_t ch; wifi_second_chan_t sc;
+  esp_wifi_get_channel(&ch, &sc);
+  Serial.printf("# 채널: %u  (sensor_node.ino 의 ESPNOW_CHANNEL 과 같아야 함)\n", ch);
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("# ESP-NOW 초기화 실패 — 3초 후 재시작");
@@ -75,7 +87,7 @@ void loop() {
   static uint32_t last = 0;
   if (millis() - last > 10000) {
     last = millis();
-    Serial.printf("# alive rx=%lu uptime=%lus\n",
+    Serial.printf("# alive rx=%lu uptime=%lus\r\n",
                   (unsigned long)rx_count, millis() / 1000);
   }
   delay(50);
