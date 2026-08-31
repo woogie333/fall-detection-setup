@@ -979,8 +979,19 @@ def deghost_frame(a):
         return a
     # 사람이 누워 있거나(WARNING) 쓰러진(DANGER) 동안은 갱신 중지.
     # 이때 갱신하면 낙상자가 배경으로 흡수되어 화면에서 지워진다.
-    moving = STATE.last_event_type in ("WARNING", "DANGER")
-    return DEGHOST.apply(a, moving)
+    lying = STATE.last_event_type in ("WARNING", "DANGER")
+
+    # ⚠ 단, 배경이 아직 없으면 얼리지 않는다.
+    # 잔상 때문에 모델이 "누워 있다"고 오판하면 상태가 DANGER 에 머물고,
+    # 그러면 배경을 영영 못 만들어 잔상도 못 없앤다 — 교착에 빠진다.
+    # 첫 배경은 무조건 만들고, 얼리는 건 그 다음부터다.
+    freeze = lying and DEGHOST.field is not None
+
+    # 배경이 너무 오래 굳어 있으면(온도가 변했는데도) 강제로 한 번 푼다.
+    if freeze and time.time() - DEGHOST.last_sample > 300:
+        freeze = False
+
+    return DEGHOST.apply(a, freeze)
 
 
 # ──────────────────────────────────────────────────────────── 카메라
@@ -1144,7 +1155,9 @@ def main() -> int:
                      help="진동센서가 판정에 개입하는 방식. "
                           "off=참고용, soft=승격/지연확인(기본), strict=충격 필수")
     pre.add_argument("--escalate-g", type=float, default=0.8,
-                     help="soft 모드에서 이 이상의 충격이면 '누움'도 낙상으로 승격")
+                     help="soft 모드에서 이 이상의 충격이면 '누움'도 낙상으로 승격. "
+                          "실측(마루, 2.6kg 가방 1m 낙하): 1.5m 에서 1.5g, "
+                          "감쇠 A∝r^-0.54 로 5m 에서도 0.8g")
     pre.add_argument("--no-impact-delay", type=float, default=6.0,
                      help="soft 모드에서 충격 없는 낙상은 이 시간 지켜본 뒤 알람(초)")
     pre.add_argument("--deghost", action="store_true",
@@ -1155,6 +1168,8 @@ def main() -> int:
     pre.add_argument("--ffc-interval", type=float, default=0,
                      help="이 주기(초)로 FFC 를 자동 실행한다. 0 = 끔. "
                           "Lepton 은 자체 자동 FFC 가 있으므로 보통 필요 없다")
+    pre.add_argument("--impact-only", action="store_true",
+                     help="열화상 없이 진동센서만 띄운다. 임계값 실측용")
     pre.add_argument("--alarm-cooldown", type=float, default=180.0)
     pre.add_argument("--jpeg-quality", type=int, default=80,
                      help="스트림 JPEG 품질 1~100. 낮추면 대역폭이 줄어 끊김이 개선된다")
@@ -1244,6 +1259,34 @@ def main() -> int:
         threading.Thread(target=impact_reader,
                          args=(known.impact_port, known.impact_baud),
                          daemon=True).start()
+
+    # ── 진동센서만 (열화상 없음). 임계값을 재려고 쓰는 모드다.
+    if known.impact_only:
+        if not known.impact_port:
+            print("오류: --impact-only 에는 --impact-port 가 필요합니다.")
+            return 1
+        STATE.note("info", "진동센서 단독 모드 — 열화상 없음")
+        print("  대시보드에서 실시간 파형을 보며 넘어져 보세요.")
+        print("  종료: Ctrl+C")
+        print()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        s = STATE.snapshot()
+        print()
+        print(f"  충격 {s['impact_count']}회")
+        for e in list(STATE.impacts)[::-1]:
+            print(f"    {e['t']}  {e['g']:.2f}g  rssi={e['rssi']}dBm")
+        if s["impact_count"]:
+            gs = [e["g"] for e in STATE.impacts]
+            print()
+            print(f"  최대 {max(gs):.2f}g · 최소 {min(gs):.2f}g "
+                  f"· 중앙값 {sorted(gs)[len(gs)//2]:.2f}g")
+            print(f"  → --escalate-g 는 최소값의 절반쯤인 "
+                  f"{min(gs)/2:.2f} 근처가 무난합니다")
+        return 0
 
     sys.argv = ["lepton_live.py"] + rest
     try:

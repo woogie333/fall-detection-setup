@@ -31,15 +31,15 @@
 
 // ─── 설정 ──────────────────────────────────────────────────────────
 
-#define DEBUG_MODE 1        // 1 = 안 자고 계속 측정값 출력 (개발용)
+#define DEBUG_MODE 0        // 1 = 안 자고 계속 측정값 출력 (개발용)
                             // 0 = 딥슬립 + 인터럽트 (실사용)
 
 // ── 무선 디버깅용 ──────────────────────────────────────────────────
-#define USE_BROADCAST 1     // 1 = 특정 MAC 대신 브로드캐스트로 전송.
+#define USE_BROADCAST 0     // 1 = 특정 MAC 대신 브로드캐스트로 전송.
                             //     수신기에 뜨면 MAC 문제, 안 뜨면 채널/무선 문제.
                             //     원인 확인이 끝나면 0 으로 되돌리세요.
 
-#define MONITOR_HZ 5        // 대시보드 실시간 그래프용. 이 주기로 현재 진동 수준을
+#define MONITOR_HZ 0        // 대시보드 실시간 그래프용. 이 주기로 현재 진동 수준을
                             //     보낸다 (0 = 끔). DEBUG_MODE(=상시 전원) 에서만
                             //     동작한다. 딥슬립 배터리 모드에서는 물리적으로
                             //     불가능하다 — 자고 있는 동안은 보낼 수 없다.
@@ -67,8 +67,9 @@ const uint8_t ADXL_ADDR  = 0x53;   // SDO=GND
 // 너무 낮으면 발소리에도 깨어나 배터리를 갉아먹으므로, DEBUG_MODE 로
 // 실제 낙상 값을 재본 뒤 그 절반쯤으로 잡으세요.
 // 실측(2026-08): 정지 시 노이즈 peak 0.08~0.10g, 손으로 친 충격 0.86g.
-// 5 = 0.31g → 노이즈의 3배. 이보다 낮추면 발소리에도 깨어난다.
-const uint8_t ACT_THRESHOLD = 5;
+// 이동평균 적용 후 정지 잡음이 0.04g 아래로 내려가므로 3(0.19g)까지 내릴 수 있다.
+// 주먹으로 바닥을 친 실측이 0.2g 였다 — 사람 낙상은 이보다 훨씬 크다.
+const uint8_t ACT_THRESHOLD = 3;
 
 const uint16_t CAPTURE_MS = 400;   // 깨어난 뒤 파형을 볼 시간
 const char*    DEVICE_ID  = "vib-01";
@@ -167,6 +168,22 @@ bool adxlBegin() {
 
   adxlWrite(REG_POWER_CTL, 0x08);      // 측정 시작
   return true;
+}
+
+// ─── 잡음 억제 ─────────────────────────────────────────────────────
+//
+// 800Hz 로 읽고 1000샘플 중 최댓값을 쓰면, 실제 진동이 아니라 센서 잡음의
+// 극단값을 재게 된다(실측 정지 시 0.09g). 4샘플 이동평균을 걸면 잡음은
+// 절반 아래로 줄고, 충격은 거의 그대로 남는다 —
+// 4샘플 = 5ms 이고, 낙상 충격은 20~50ms 라 뭉개지지 않는다.
+#define SMOOTH_N 4
+
+float smooth(float *hist, uint8_t &idx, float v) {
+  hist[idx] = v;
+  idx = (idx + 1) % SMOOTH_N;
+  float sum = 0;
+  for (uint8_t i = 0; i < SMOOTH_N; i++) sum += hist[i];
+  return sum / SMOOTH_N;
 }
 
 // 정지 상태 기준선 측정. 노드를 가만히 둔 상태에서 불러야 한다.
@@ -297,13 +314,17 @@ void captureImpact(float &peak_g, float &dur_ms) {
   uint32_t over_start = 0, over_total = 0;
   peak_g = 0;
 
+  float hist[SMOOTH_N] = {0}; uint8_t hi = 0; uint32_t warm = 0;
+
   while (millis() - t0 < CAPTURE_MS) {
     int16_t x, y, z;
     adxlReadXYZ(x, y, z);
     // 중력을 뺀 **변화량**을 본다. 가만히 있으면 0 근처, 충격이 오면 튄다.
     // 예전처럼 절대 크기를 쓰면 정지 상태에서도 1.0g 라 임계값이 왜곡된다.
-    float mag = fabsf(sqrtf(toG(x) * toG(x) + toG(y) * toG(y)
+    float raw = fabsf(sqrtf(toG(x) * toG(x) + toG(y) * toG(y)
                             + toG(z) * toG(z)) - g_baseline);
+    float mag = smooth(hist, hi, raw);
+    if (++warm < SMOOTH_N) continue;      // 창이 채워지기 전 값은 버린다
     if (mag > peak_g) peak_g = mag;
 
     if (mag >= TRIG_G) {
@@ -321,29 +342,36 @@ void captureImpact(float &peak_g, float &dur_ms) {
 // ─── 메인 ─────────────────────────────────────────────────────────
 
 void setup() {
-  Serial.begin(115200);
-  delay(DEBUG_MODE ? 1500 : 200);
-
   boot_count++;
+  bool woke = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO);
+
+  // ⚠ 충격으로 깨어났으면 1ms 도 낭비하면 안 된다.
+  // 시리얼 대기(200ms)나 센서 재설정을 먼저 하면 충격이 끝난 뒤에 재게 된다.
+  Serial.begin(115200);
+  if (!woke) delay(DEBUG_MODE ? 1500 : 200);
+
   pinMode(PIN_INT1, INPUT);
   Wire.begin();
   Wire.setClock(400000);   // 접촉 불량으로 읽기 실패가 잦으면 100000 으로 낮추세요
 
-  if (!adxlBegin()) {
-    Serial.println("센서 초기화 실패 — 10초 후 재시도");
-    delay(10000);
-    ESP.restart();
+  // 딥슬립 중에도 ADXL 은 계속 전원을 받아 설정을 유지한다.
+  // 그래서 충격으로 깨어났을 때는 재설정 없이 바로 읽어도 된다.
+  if (!woke) {
+    if (!adxlBegin()) {
+      Serial.println("센서 초기화 실패 — 10초 후 재시도");
+      delay(10000);
+      ESP.restart();
+    }
+    // 첫 부팅에서만 기준선을 잰다. 충격으로 깨어난 뒤엔 이미 흔들리고 있다.
+    if (boot_count == 1) measureBaseline();
   }
 
-  // 첫 부팅에서만 기준선을 잰다. 충격으로 깨어난 뒤엔 이미 흔들리고 있다.
-  if (boot_count == 1) measureBaseline();
-
-  // ⚠ 인터럽트 래치 해제. 이걸 안 하면 INT1 이 HIGH 로 고정되고,
-  // 딥슬립에 들어가자마자 즉시 깨어나는 무한 루프가 되어 배터리가 나간다.
-  adxlRead(REG_INT_SOURCE);
-
-  Serial.printf("\n부팅 #%lu  (원인: %d)\n", boot_count, esp_sleep_get_wakeup_cause());
-  Serial.print("내 MAC: "); Serial.println(WiFi.macAddress());
+  // 충격으로 깨어난 경우엔 출력도 나중에. USB 시리얼 쓰기가 수 ms 를 먹는다.
+  if (!woke) {
+    Serial.printf("\n부팅 #%lu  (원인: %d)\n",
+                  boot_count, esp_sleep_get_wakeup_cause());
+    Serial.print("내 MAC: "); Serial.println(WiFi.macAddress());
+  }
 
   if (DEBUG_MODE) {
     Serial.println("\n[DEBUG] 딥슬립 없이 가속도를 계속 출력합니다.");
@@ -356,12 +384,23 @@ void setup() {
   }
 
   // ── 실사용 경로 ──
+  //
+  // ⚠ 순서가 중요하다. 예전에는 espnowBegin() 을 먼저 불렀는데,
+  // WiFi 초기화에 100~200ms 가 걸린다. 낙상 충격은 20~50ms 라
+  // 그 사이에 이미 끝나버려 피크를 통째로 놓쳤다.
+  // 깨어나자마자 측정부터 하고, 무선은 보낼 때 켠다.
+  bool woke_by_int = woke;
+
+  float peak = 0, dur = 0;
+  if (woke_by_int || boot_count == 1) {
+    captureImpact(peak, dur);
+    Serial.printf("\n부팅 #%lu  측정 peak=%.2fg dur=%.0fms\n",
+                  boot_count, peak, dur);
+  }
+
   espnowBegin();
 
-  bool woke_by_int = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO);
   if (woke_by_int || boot_count == 1) {
-    float peak, dur;
-    captureImpact(peak, dur);
     if (peak >= ACT_THRESHOLD * 0.0625f) {
       sendImpact(peak, dur);
     } else {
@@ -384,15 +423,18 @@ void loop() {
 
   // 300ms 창에서 최대한 빨리 읽어 피크를 잡는다.
   // 한 번씩 띄엄띄엄 읽으면 짧은 충격을 놓친다.
-  float gx = 0, gy = 0, gz = 0, peak = 0;
+  float gx = 0, gy = 0, gz = 0, peak = 0, raw_peak = 0;
   uint32_t samples = 0;
   uint32_t t_end = millis() + 300;
+  float hist[SMOOTH_N] = {0}; uint8_t hi = 0;
   while (millis() < t_end) {
     int16_t x, y, z;
     adxlReadXYZ(x, y, z);
     gx = toG(x); gy = toG(y); gz = toG(z);
-    float m = fabsf(sqrtf(gx * gx + gy * gy + gz * gz) - g_baseline);  // 중력 제외
-    if (m > peak) peak = m;
+    float r = fabsf(sqrtf(gx * gx + gy * gy + gz * gz) - g_baseline);  // 중력 제외
+    float m = smooth(hist, hi, r);
+    if (r > raw_peak) raw_peak = r;
+    if (samples >= SMOOTH_N && m > peak) peak = m;
     samples++;
   }
 
@@ -409,8 +451,8 @@ void loop() {
   for (int i = 0; i < blen; i++) bar[i] = '#';
   bar[blen] = '\0';
 
-  Serial.printf("x=%+5.2f y=%+5.2f z=%+5.2f  peak=%5.2fg (임계 %.2fg, %lu샘플) INT1=%d %s%s\n",
-                gx, gy, gz, peak, TRIG_G, samples,
+  Serial.printf("x=%+5.2f y=%+5.2f z=%+5.2f  peak=%5.2fg (raw %4.2f, 임계 %.2fg, %lu샘플) INT1=%d %s%s\n",
+                gx, gy, gz, peak, raw_peak, TRIG_G, samples,
                 digitalRead(PIN_INT1), bar, over ? "  <<< 충격" : "");
 
   if (over && millis() - last_send > 2000) {
