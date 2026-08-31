@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>케이스 설계 도면</title>
+<style>
+:root{
+  --bg:#f7f6f3; --panel:#fff; --line:#d9d5cc; --ink:#22201d; --dim:#6e6a62;
+  --edge:#3a3733; --dimline:#a89f92; --hi:#c0453c; --ok:#3f7d55; --sig:#2f6f9f;
+  --ghost:#c9c3b8;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#141317; --panel:#1d1c21; --line:#33313a; --ink:#e8e6e1; --dim:#948f87;
+  --edge:#d8d4cd; --dimline:#6b665e; --hi:#e0736a; --ok:#7fb08c; --sig:#7aa9cc;
+  --ghost:#4a4650;
+}}
+:root[data-theme="dark"]{
+  --bg:#141317; --panel:#1d1c21; --line:#33313a; --ink:#e8e6e1; --dim:#948f87;
+  --edge:#d8d4cd; --dimline:#6b665e; --hi:#e0736a; --ok:#7fb08c; --sig:#7aa9cc;
+  --ghost:#4a4650;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);padding:28px 16px 60px;
+  font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",system-ui,sans-serif;
+  line-height:1.65}
+.wrap{max-width:820px;margin:0 auto}
+h1{font-size:23px;margin:0 0 4px;letter-spacing:-.015em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 8px}
+h2{font-size:17px;margin:38px 0 4px;letter-spacing:-.015em;
+   padding-top:16px;border-top:1px solid var(--line)}
+h3{font-size:14px;margin:24px 0 8px;color:var(--dim);
+   text-transform:uppercase;letter-spacing:.05em}
+p{margin:10px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px;margin:14px 0;overflow-x:auto}
+svg{display:block;width:100%;height:auto;min-width:560px}
+.dl{font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.lb{font:12px -apple-system,system-ui,sans-serif}
+.lbb{font:600 12px -apple-system,system-ui,sans-serif}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:10px 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);
+  vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:rgba(128,120,110,.14);padding:1px 5px;border-radius:4px}
+.note{border-left:3px solid var(--dimline);padding:2px 0 2px 14px;margin:14px 0;
+  color:var(--dim);font-size:13.5px}
+.warn{border-left-color:var(--hi);color:var(--ink)}
+.cap{font-size:12.5px;color:var(--dim);margin:6px 2px 0}
+ol,ul{padding-left:20px} li{margin:5px 0}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;
+  border-radius:20px;background:rgba(192,69,60,.14);color:var(--hi);
+  vertical-align:middle;margin-left:6px}
+</style></head><body>
+<div class="wrap">
+
+<h1>케이스 설계 도면</h1>
+<p class="sub">낙상 감지 시스템 · 메인 유닛(벽걸이) + 진동 노드(바닥) · 2026-08</p>
+
+<div class="note warn">
+<b>이 도면의 숫자 중 일부는 실측이 필요합니다.</b> 아래 <b>0장</b>에 실측 목록이 있습니다.
+확정되지 않은 값은 도면에서 <span class="tag">실측</span> 으로 표시했습니다.
+그 값들을 먼저 재고 시작하셔야 재출력을 줄일 수 있습니다.
+</div>
+
+<h2>0. 모델링 전에 실측할 것</h2>
+
+<p>캘리퍼로 재서 아래 표를 채우고 시작하세요. 공개 자료에 없는 값들입니다.</p>
+
+<table>
+  <tr><th>항목</th><th>왜 필요한가</th><th>측정값</th></tr>
+  <tr><td>RDK X3 마운트 홀 간격 (가로 × 세로)</td><td>보스 위치</td><td>______ × ______</td></tr>
+  <tr><td>RDK X3 홀 지름</td><td>보스 지름 (홀보다 작게)</td><td>______</td></tr>
+  <tr><td>RDK X3 홀 ↔ 보드 모서리 거리</td><td>보스가 벽에 안 닿게</td><td>______</td></tr>
+  <tr><td>RDK X3 커넥터 높이 (USB, HDMI 등 최고점)</td><td>내부 높이</td><td>______</td></tr>
+  <tr><td>PureThermal 3 홀 위치</td><td>보스 위치 — <b>STEP 파일로 대체 가능</b></td><td>______</td></tr>
+  <tr><td>Lepton 렌즈 중심 ↔ 보드 모서리</td><td>개구부 위치 — <b>STEP 파일로 대체 가능</b></td><td>______</td></tr>
+  <tr><td>Lepton 렌즈 배럴 지름</td><td>개구부 지름</td><td>______</td></tr>
+  <tr><td>Lepton 렌즈 앞면 돌출 높이</td><td>전면판 두께</td><td>______</td></tr>
+  <tr><td>배터리 실측 (가로×세로×두께)</td><td>수납부</td><td>______</td></tr>
+  <tr><td>XIAO 실측 (안테나 커넥터 포함 높이)</td><td>노드 내부 높이</td><td>______</td></tr>
+  <tr><td>ADXL345 홀 간격</td><td>보스 위치</td><td>______</td></tr>
+</table>
+
+<div class="note" style="border-left-color:var(--ok)">
+<b>먼저 STEP 파일을 받으세요.</b> GroupGets 의 PureThermal 3 제품 페이지에서
+STEP 파일을 제공합니다. CAD 에 그대로 불러오면 홀 위치·렌즈 중심·커넥터 위치가
+전부 정확하게 들어오므로, 위 표의 PureThermal 관련 항목은 재지 않아도 됩니다.
+D-Robotics 자료 페이지에도 RDK X3 STEP 이 있는지 확인해 보세요.
+</div>
+
+<p class="note">
+STEP 이 없는 부품은 직접 재야 합니다. 렌즈 관련 값이 가장 중요합니다. 개구부가 어긋나면 화각이 잘리고,
+이건 조립 후에야 발견됩니다. 렌즈 중심은 보드를 자 위에 올려놓고
+양쪽 모서리에서 재면 됩니다.
+</p>
+
+<h2>1. 확정된 부품 치수</h2>
+
+<table>
+  <tr><th>부품</th><th>치수 (mm)</th><th>출처</th></tr>
+  <tr><td>RDK X3</td><td>85 × 56 × 20</td><td>Waveshare 제품 페이지</td></tr>
+  <tr><td>PureThermal 3</td><td>25.8 × 28.9, USB-C</td><td>GroupGets 데이터시트 Rev2</td></tr>
+  <tr><td>XIAO ESP32C3</td><td>21 × 17.5 × 3.5</td><td>Seeed</td></tr>
+  <tr><td>ADXL345 (GY-291)</td><td>20.4 × 15.8</td><td>벤더 표기 (클론 편차 있음)</td></tr>
+  <tr><td>배터리 TW102050</td><td>50 × 20 × 10</td><td>디바이스마트</td></tr>
+</table>
+
+<h2>2. 메인 유닛 — 벽걸이, 각도 조절</h2>
+
+<p>구성: RDK X3 + PureThermal 3(Lepton 3.0). <b>LD2450 은 제외</b>했습니다.</p>
+
+<h3>2-1. 정면도</h3>
+<div class="card">
+<svg viewBox="0 0 700 430" role="img" aria-label="메인 유닛 정면도">
+  <!-- 외곽 -->
+  <rect x="150" y="60" width="380" height="270" rx="10"
+        fill="none" stroke="var(--edge)" stroke-width="2.5"/>
+  <!-- 내부 캐비티 (숨은선) -->
+  <rect x="162" y="72" width="356" height="246" rx="5"
+        fill="none" stroke="var(--ghost)" stroke-width="1.4" stroke-dasharray="6 4"/>
+
+  <!-- Lepton 개구부 -->
+  <circle cx="340" cy="140" r="34" fill="none" stroke="var(--hi)" stroke-width="2.5"/>
+  <circle cx="340" cy="140" r="21" fill="none" stroke="var(--hi)" stroke-width="2.5"/>
+  <text x="340" y="145" text-anchor="middle" class="dl" fill="var(--hi)">Ø12</text>
+  <path d="M340 106 V88" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="340" y="82" text-anchor="middle" class="lbb" fill="var(--hi)">Lepton 개구부 (뚫림)</text>
+  <text x="404" y="145" class="dl" fill="var(--hi)">Ø20 카운터싱크</text>
+
+  <!-- 통풍구 -->
+  <g stroke="var(--edge)" stroke-width="2" stroke-linecap="round">
+    <path d="M200 250 H290"/><path d="M200 264 H290"/><path d="M200 278 H290"/>
+    <path d="M390 250 H480"/><path d="M390 264 H480"/><path d="M390 278 H480"/>
+  </g>
+  <text x="245" y="302" text-anchor="middle" class="lb" fill="var(--dim)">통풍 슬롯</text>
+  <text x="435" y="302" text-anchor="middle" class="lb" fill="var(--dim)">통풍 슬롯</text>
+
+  <!-- 가로 치수 -->
+  <path d="M150 366 H530" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M150 360 V372 M530 360 V372" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="340" y="360" text-anchor="middle" class="dl" fill="var(--ink)">96</text>
+  <!-- 세로 치수 -->
+  <path d="M578 60 V330" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M572 60 H584 M572 330 H584" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="596" y="199" class="dl" fill="var(--ink)">72</text>
+
+  <!-- 개구부 중심 높이 -->
+  <path d="M118 60 V140" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M112 60 H124 M112 140 H124" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="104" y="104" text-anchor="end" class="dl" fill="var(--ink)">실측</text>
+
+  <text x="150" y="404" class="lb" fill="var(--dim)">단위 mm · 벽 두께 2.4 · 모서리 R3</text>
+</svg>
+<p class="cap">개구부는 <b>반드시 뚫려 있어야</b> 합니다. 투명 커버를 씌우면 아무것도 안 보입니다.</p>
+</div>
+
+<h3>2-2. 측면 단면도</h3>
+<div class="card">
+<svg viewBox="0 0 700 400" role="img" aria-label="메인 유닛 측면 단면도">
+  <!-- 본체 -->
+  <path d="M200 70 H470 A10 10 0 0 1 480 80 V300 A10 10 0 0 1 470 310 H200
+           A10 10 0 0 1 190 300 V80 A10 10 0 0 1 200 70 Z"
+        fill="none" stroke="var(--edge)" stroke-width="2.5"/>
+  <!-- 내부 -->
+  <rect x="202" y="82" width="266" height="216" fill="none"
+        stroke="var(--ghost)" stroke-width="1.4" stroke-dasharray="6 4"/>
+
+  <!-- RDK X3 -->
+  <rect x="218" y="215" width="230" height="14" fill="none"
+        stroke="var(--sig)" stroke-width="2"/>
+  <text x="333" y="252" text-anchor="middle" class="lbb" fill="var(--sig)">RDK X3  85 × 56</text>
+  <!-- 보스 -->
+  <path d="M228 229 V262 M438 229 V262" stroke="var(--sig)" stroke-width="3"/>
+  <text x="470" y="268" class="dl" fill="var(--sig)">보스 h=6</text>
+
+  <!-- PureThermal -->
+  <rect x="240" y="120" width="60" height="10" fill="none"
+        stroke="var(--ok)" stroke-width="2"/>
+  <text x="272" y="112" text-anchor="middle" class="lbb" fill="var(--ok)">PureThermal 3 · 25.8 × 28.9</text>
+  <!-- 렌즈 -->
+  <rect x="196" y="118" width="46" height="14" fill="none" stroke="var(--hi)" stroke-width="2"/>
+  <path d="M190 125 H150" stroke="var(--hi)" stroke-width="2"/>
+  <text x="146" y="129" text-anchor="end" class="lbb" fill="var(--hi)">렌즈 → 개구부</text>
+
+  <!-- 화각 -->
+  <path d="M190 125 L60 60 M190 125 L60 190" stroke="var(--hi)"
+        stroke-width="1.2" stroke-dasharray="5 4"/>
+  <text x="86" y="129" class="dl" fill="var(--hi)">HFOV 56°</text>
+
+  <!-- 힌지 -->
+  <circle cx="530" cy="190" r="9" fill="none" stroke="var(--edge)" stroke-width="2.5"/>
+  <circle cx="530" cy="190" r="3" fill="var(--edge)"/>
+  <path d="M480 160 H530 M480 220 H530" stroke="var(--edge)" stroke-width="2"/>
+  <text x="548" y="186" class="lbb" fill="var(--ink)">힌지 M3</text>
+  <text x="548" y="203" class="dl" fill="var(--dim)">0~30° 조절</text>
+
+  <!-- 벽 브래킷 -->
+  <path d="M596 90 V290" stroke="var(--edge)" stroke-width="3"/>
+  <path d="M596 130 H556 M596 250 H556" stroke="var(--edge)" stroke-width="2"/>
+  <circle cx="612" cy="130" r="4" fill="none" stroke="var(--edge)" stroke-width="1.6"/>
+  <circle cx="612" cy="250" r="4" fill="none" stroke="var(--edge)" stroke-width="1.6"/>
+  <text x="624" y="134" class="dl" fill="var(--dim)">벽 나사 Ø4</text>
+  <text x="624" y="254" class="dl" fill="var(--dim)">간격 80</text>
+  <text x="604" y="316" text-anchor="middle" class="lb" fill="var(--dim)">벽</text>
+
+  <!-- 각도 표시 -->
+  <path d="M480 190 A60 60 0 0 0 462 236" stroke="var(--dimline)"
+        stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+  <text x="452" y="196" text-anchor="end" class="dl" fill="var(--dim)">아래로 기울임</text>
+
+  <!-- 깊이 치수 -->
+  <path d="M190 344 H480" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M190 338 V350 M480 338 V350" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="335" y="338" text-anchor="middle" class="dl" fill="var(--ink)">깊이 40</text>
+</svg>
+<p class="cap">PureThermal 을 전면 상단에, RDK X3 를 바닥에 눕히는 2층 구조입니다.</p>
+</div>
+
+<h3>2-3. 주요 치수</h3>
+<table>
+  <tr><th>항목</th><th>값</th><th>근거</th></tr>
+  <tr><td>외형 (가로 × 세로 × 깊이)</td><td>96 × 72 × 40</td><td>내부 + 벽 두께</td></tr>
+  <tr><td>내부 캐비티</td><td>91 × 67 × 35</td><td>RDK X3 85×56 + 여유 3</td></tr>
+  <tr><td>벽 두께</td><td>2.4</td><td>0.4 노즐 × 6 라인. 강성 확보</td></tr>
+  <tr><td>Lepton 개구부</td><td>Ø12, 바깥으로 Ø20 카운터싱크</td><td>렌즈 배럴 + 화각 여유</td></tr>
+  <tr><td>보드 보스 높이</td><td>6</td><td>바닥 배선·납땜면 여유</td></tr>
+  <tr><td>보스 지름</td><td>홀 지름 − 0.4 (M2.5 셀프탭이면 Ø2.2)</td><td>실측 후 결정</td></tr>
+  <tr><td>USB-C 접근구</td><td>13 × 9</td><td>커넥터 + 케이블 몰딩 여유</td></tr>
+  <tr><td>통풍 슬롯</td><td>3 × 25, 6개 × 2면</td><td>개구부에서 60 이상 떨어뜨림</td></tr>
+  <tr><td>힌지</td><td>M3 볼트 + 손잡이 너트</td><td>0~30° 무단 조절</td></tr>
+  <tr><td>벽 나사 홀</td><td>Ø4, 간격 80</td><td>석고 앵커 기준</td></tr>
+</table>
+
+<div class="note warn">
+<b>통풍구를 개구부 근처에 두지 마세요.</b> 내부 발열이 렌즈 화각에 들어오면
+그 영역이 항상 뜨겁게 잡혀 오탐의 원인이 됩니다. 최소 60mm 는 떨어뜨리고,
+가능하면 개구부보다 <b>아래쪽</b>에 두세요. 더운 공기는 위로 흐릅니다.
+</div>
+
+<h3>2-4. 설치 각도</h3>
+<p>Lepton 3.0 의 HFOV 는 56°입니다. 설치 높이별로 바닥이 화각에 들어오는 거리:</p>
+<table>
+  <tr><th>설치 높이</th><th>기울기</th><th>바닥 감지 범위 (대략)</th></tr>
+  <tr><td>1.5 m</td><td>10°</td><td>1.5 ~ 6 m</td></tr>
+  <tr><td>1.8 m</td><td>15°</td><td>1.5 ~ 5 m</td></tr>
+  <tr><td>2.2 m</td><td>20°</td><td>1.5 ~ 4.5 m</td></tr>
+</table>
+<p class="note">
+이 표는 삼각함수로 계산한 값이지 실측이 아닙니다. 각도 조절 구조로 만드는
+이유가 이것입니다 — 설치해보고 대시보드를 보며 맞추는 게 확실합니다.
+</p>
+
+<h2>3. 진동 노드 — 바닥 밀착형</h2>
+
+<p>구성: XIAO ESP32C3 + ADXL345 + 배터리 TW102050(50 × 20 × 10).</p>
+
+<h3>3-1. 평면도 (뚜껑 열린 상태)</h3>
+<div class="card">
+<svg viewBox="0 0 700 330" role="img" aria-label="진동 노드 평면도">
+  <!-- 외곽 -->
+  <rect x="90" y="60" width="470" height="190" rx="14"
+        fill="none" stroke="var(--edge)" stroke-width="2.5"/>
+  <rect x="102" y="72" width="446" height="166" rx="7"
+        fill="none" stroke="var(--ghost)" stroke-width="1.4" stroke-dasharray="6 4"/>
+
+  <!-- 배터리 -->
+  <rect x="120" y="92" width="250" height="100" rx="4"
+        fill="none" stroke="var(--sig)" stroke-width="2"/>
+  <text x="245" y="138" text-anchor="middle" class="lbb" fill="var(--sig)">배터리</text>
+  <text x="245" y="156" text-anchor="middle" class="dl" fill="var(--sig)">50 × 20 × 10</text>
+
+  <!-- XIAO -->
+  <rect x="392" y="92" width="105" height="88" rx="4"
+        fill="none" stroke="var(--ok)" stroke-width="2"/>
+  <text x="444" y="130" text-anchor="middle" class="lbb" fill="var(--ok)">XIAO</text>
+  <text x="444" y="147" text-anchor="middle" class="dl" fill="var(--ok)">21 × 17.5</text>
+
+  <!-- ADXL 위치 (바닥 중앙) -->
+  <rect x="120" y="200" width="102" height="30" rx="3"
+        fill="none" stroke="var(--hi)" stroke-width="2"/>
+  <text x="171" y="220" text-anchor="middle" class="lbb" fill="var(--hi)">ADXL345</text>
+  <text x="240" y="220" class="dl" fill="var(--hi)">← 바닥면에 직결 고정</text>
+
+  <!-- 안테나 -->
+  <path d="M497 110 H540 V80" stroke="var(--ok)" stroke-width="2" fill="none"/>
+  <text x="548" y="76" class="dl" fill="var(--ok)">외장 안테나</text>
+
+  <!-- 치수 -->
+  <path d="M90 286 H560" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M90 280 V292 M560 280 V292" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="325" y="280" text-anchor="middle" class="dl" fill="var(--ink)">85</text>
+
+  <path d="M604 60 V250" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M598 60 H610 M598 250 H610" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="622" y="159" class="dl" fill="var(--ink)">35</text>
+
+  <text x="90" y="316" class="lb" fill="var(--dim)">단위 mm · 벽 두께 2.0 · 바닥 2.5</text>
+</svg>
+</div>
+
+<h3>3-2. 측면 단면도</h3>
+<div class="card">
+<svg viewBox="0 0 700 250" role="img" aria-label="진동 노드 측면 단면도">
+  <!-- 바닥면 (마루) -->
+  <path d="M60 196 H640" stroke="var(--edge)" stroke-width="3"/>
+  <g stroke="var(--dimline)" stroke-width="1">
+    <path d="M70 196 L58 208"/><path d="M110 196 L98 208"/><path d="M150 196 L138 208"/>
+    <path d="M190 196 L178 208"/><path d="M230 196 L218 208"/><path d="M270 196 L258 208"/>
+    <path d="M310 196 L298 208"/><path d="M350 196 L338 208"/><path d="M390 196 L378 208"/>
+    <path d="M430 196 L418 208"/><path d="M470 196 L458 208"/><path d="M510 196 L498 208"/>
+    <path d="M550 196 L538 208"/><path d="M590 196 L578 208"/><path d="M630 196 L618 208"/>
+  </g>
+  <text x="60" y="226" class="lb" fill="var(--dim)">마루 바닥 — 양면테이프로 넓게 접착</text>
+
+  <!-- 케이스 단면: 경사진 모서리 -->
+  <path d="M120 196 L150 130 H550 L580 196 Z"
+        fill="none" stroke="var(--edge)" stroke-width="2.5"/>
+  <path d="M132 190 L158 140 H542 L568 190"
+        fill="none" stroke="var(--ghost)" stroke-width="1.4" stroke-dasharray="6 4"/>
+
+  <!-- 배터리 -->
+  <rect x="180" y="152" width="180" height="34" fill="none"
+        stroke="var(--sig)" stroke-width="2"/>
+  <text x="270" y="174" text-anchor="middle" class="dl" fill="var(--sig)">배터리 10</text>
+
+  <!-- XIAO -->
+  <rect x="400" y="150" width="110" height="12" fill="none"
+        stroke="var(--ok)" stroke-width="2"/>
+  <text x="455" y="144" text-anchor="middle" class="dl" fill="var(--ok)">XIAO</text>
+
+  <!-- ADXL 바닥 직결 -->
+  <rect x="180" y="186" width="70" height="8" fill="none"
+        stroke="var(--hi)" stroke-width="2.5"/>
+  <text x="262" y="193" class="dl" fill="var(--hi)">ADXL345 — 바닥에 직결</text>
+
+  <!-- 높이 치수 -->
+  <path d="M92 130 V196" stroke="var(--dimline)" stroke-width="1"/>
+  <path d="M86 130 H98 M86 196 H98" stroke="var(--dimline)" stroke-width="1"/>
+  <text x="78" y="167" text-anchor="end" class="dl" fill="var(--ink)">16</text>
+
+  <!-- 경사 -->
+  <text x="128" y="118" class="dl" fill="var(--dim)">30° 경사 — 발에 안 걸리게</text>
+  <path d="M150 126 L124 190" stroke="var(--dimline)" stroke-width="1" stroke-dasharray="3 3"/>
+</svg>
+<p class="cap">고무발이나 스탠드오프를 넣지 마세요. 진동이 흡수되어 센서가 무의미해집니다.</p>
+</div>
+
+<h3>3-3. 주요 치수</h3>
+<table>
+  <tr><th>항목</th><th>값</th><th>근거</th></tr>
+  <tr><td>외형 (가로 × 세로 × 높이)</td><td>85 × 35 × 16</td><td>배터리 두께가 높이를 결정</td></tr>
+  <tr><td>내부 캐비티</td><td>81 × 31 × 12</td><td>배터리 10 + 여유 2</td></tr>
+  <tr><td>바닥 두께</td><td>2.5</td><td>얇으면 휘어서 진동이 왜곡됨</td></tr>
+  <tr><td>측벽 두께</td><td>2.0</td><td></td></tr>
+  <tr><td>모서리 경사</td><td>30°, 폭 8</td><td>발 걸림 방지</td></tr>
+  <tr><td>ADXL345 고정</td><td>바닥면에 <b>직결</b> (보스 높이 0)</td><td>진동 전달의 핵심</td></tr>
+  <tr><td>배터리 수납부</td><td>52 × 22 × 11</td><td>실측 + 여유 2 / 1</td></tr>
+  <tr><td>안테나 공간</td><td>Ø8 × 40 여유</td><td>U.FL 외장 안테나</td></tr>
+  <tr><td>USB-C 접근구</td><td>13 × 9</td><td>충전·펌웨어 업로드</td></tr>
+</table>
+
+<div class="note warn">
+<b>ADXL345 는 케이스 바닥면에 직접 닿게 고정하세요.</b> 보스로 띄우거나
+스펀지·양면폼을 대면 충격이 감쇠되어 측정값이 몇 배 작아집니다.
+실측에서 노이즈가 0.04g, 신호가 0.2~1.5g 였는데, 여기서 절반만 잃어도
+판정이 흔들립니다. 나사 조임도 단단히 하세요.
+</div>
+
+<h2>4. 출력 설정</h2>
+
+<table>
+  <tr><th>항목</th><th>권장</th><th>이유</th></tr>
+  <tr><td>재료</td><td>PETG 또는 PLA+</td><td>PLA 는 여름 실내에서 변형 가능</td></tr>
+  <tr><td>레이어 높이</td><td>0.2</td><td>강도와 시간의 균형</td></tr>
+  <tr><td>벽 라인 수</td><td>3 이상 (0.4 노즐 기준)</td><td>2.4mm 벽에 맞춤</td></tr>
+  <tr><td>인필</td><td>25% 격자</td><td>노드 바닥은 40% 이상 — 강성이 진동 전달에 직결</td></tr>
+  <tr><td>서포트</td><td>메인 유닛 개구부·힌지에만</td><td>노드는 필요 없게 설계</td></tr>
+  <tr><td>출력 방향</td><td>노드: 바닥면을 베드에 / 메인: 뒷면을 베드에</td><td>층 방향이 강도를 좌우</td></tr>
+</table>
+
+<div class="note">
+<b>공차는 0.2~0.3mm 로 잡으세요.</b> 프린터마다 다르므로, 본체를 뽑기 전에
+<b>보스 3개와 배터리 홈만 있는 작은 테스트 조각</b>을 먼저 출력해 실물을
+끼워보세요. 10분이면 뽑고, 이걸로 재출력 한 번을 아낍니다.
+</div>
+
+<h2>5. 설계 순서 제안</h2>
+<ol>
+  <li><b>0장 실측표를 채운다</b> — 이게 안 되면 나머지가 다 추정치가 됩니다</li>
+  <li>부품 더미(직육면체)만 배치해 간섭을 확인한다</li>
+  <li>테스트 조각으로 공차를 잡는다</li>
+  <li>노드부터 출력한다 — 작고 빨라서 공차·조립 감각을 먼저 얻습니다</li>
+  <li>노드가 맞으면 메인 유닛을 출력한다</li>
+</ol>
+
+<p class="note">
+메인 유닛을 먼저 뽑고 싶은 유혹이 있지만, 크고 오래 걸려서 틀렸을 때 손해가 큽니다.
+노드로 프린터의 버릇을 파악한 뒤 큰 걸 뽑는 게 결과적으로 빠릅니다.
+</p>
+
+</div></body></html>

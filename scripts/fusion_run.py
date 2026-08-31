@@ -103,6 +103,9 @@ class State:
         self.log: deque = deque(maxlen=40)
         self.impacts: deque = deque(maxlen=12)   # 최근 충격 이력
         self.levels: deque = deque(maxlen=150)   # 실시간 진동 수준 (약 30초)
+        self.batt_mv = 0
+        self.batt_pct = 0
+        self.batt_t = 0.0
         self.ffc_count = 0
         self.ffc_t = 0.0
         self.ffc_ctrl: str | None = None
@@ -168,6 +171,10 @@ class State:
             "level_live": bool(self.level_t and
                                time.time() - self.level_t < 3),
             "impact_batt": self.impact_batt,
+            "batt_mv": self.batt_mv,
+            "batt_pct": self.batt_pct,
+            "batt_age": (None if not self.batt_t
+                         else round(time.time() - self.batt_t)),
             "impact_link": (None if not self.last_seen_t
                             else round(time.time() - self.last_seen_t, 1)),
             "thermal_events": self.thermal_events,
@@ -241,7 +248,11 @@ def impact_reader(port: str, baud: int) -> None:
                     STATE.last_impact_g = imp.peak_g
                     STATE.impact_count += 1
                     STATE.impact_rssi = imp.rssi
-                    STATE.impact_batt = imp.battery_mv // 30 if imp.battery_mv else 0
+                    if imp.battery_mv:
+                        STATE.batt_mv = imp.battery_mv
+                        STATE.batt_pct = batt_percent(imp.battery_mv)
+                        STATE.batt_t = imp.t
+                        STATE.impact_batt = STATE.batt_pct
                 with STATE.lock:
                     STATE.impacts.appendleft({
                         "t": time.strftime("%H:%M:%S", time.localtime(imp.t)),
@@ -261,8 +272,28 @@ def impact_reader(port: str, baud: int) -> None:
         time.sleep(2)   # 재연결
 
 
-LEVEL_RE = __import__("re").compile(
+_re = __import__("re")
+LEVEL_RE = _re.compile(
     r"LEVEL\s+device=(?P<dev>\S+)\s+peak=(?P<peak>[\d.]+)\s+rssi=(?P<rssi>-?\d+)")
+BATT_RE = _re.compile(
+    r"BATT\s+device=(?P<dev>\S+)\s+mv=(?P<mv>\d+)\s+rssi=(?P<rssi>-?\d+)")
+
+
+# 리튬폴리머 방전 곡선. 전압-잔량은 선형이 아니다.
+_BATT_CURVE = [(3300, 0), (3600, 5), (3700, 10), (3750, 20), (3790, 30),
+               (3830, 40), (3870, 50), (3920, 60), (3970, 70), (4020, 80),
+               (4100, 90), (4200, 100)]
+
+
+def batt_percent(mv: int) -> int:
+    if not mv:
+        return 0
+    if mv <= _BATT_CURVE[0][0]:
+        return 0
+    for (v0, p0), (v1, p1) in zip(_BATT_CURVE, _BATT_CURVE[1:]):
+        if mv < v1:
+            return int(p0 + (mv - v0) / (v1 - v0) * (p1 - p0))
+    return 100
 
 
 def _read_impacts(ser):
@@ -284,6 +315,27 @@ def _read_impacts(ser):
             continue
         line = raw.decode("utf-8", "replace").strip()
         if not line or line.startswith("#"):
+            continue
+
+        bt = BATT_RE.search(line)
+        if bt:
+            mv = int(bt.group("mv"))
+            pct = batt_percent(mv)
+            with STATE.lock:
+                STATE.batt_mv = mv
+                STATE.batt_pct = pct
+                STATE.batt_t = time.time()
+                STATE.last_seen_t = time.time()
+                STATE.impact_rssi = int(bt.group("rssi"))
+                if pct:
+                    STATE.impact_batt = pct
+            if mv == 0:
+                STATE.note("info", "배터리 보고 — 분압 저항 미장착 (HAVE_BATT_SENSE 0)")
+            else:
+                STATE.note("info" if pct > 20 else "error",
+                           f"배터리 {pct}% ({mv}mV)"
+                           + ("  ⚠ 교체 필요" if pct <= 20 else ""))
+            yield None
             continue
 
         lv = LEVEL_RE.search(line)
@@ -754,6 +806,12 @@ async function tick(){
       row('승격 알람', s.escalations + ' 회') +
       row('지연 확인', s.deferred + ' 회') +
       row('링크', link) +
+      row('배터리', !s.batt_pct
+          ? pill('미측정','p-dim')
+          : pill(s.batt_pct + '% · ' + s.batt_mv + 'mV',
+                 s.batt_pct > 40 ? 'p-ok' : s.batt_pct > 20 ? 'p-warn' : 'p-bad')
+            + (s.batt_age===null ? '' : ' <span class="t">'
+               + Math.round(s.batt_age/60) + '분 전</span>')) +
       row('신호 세기', s.impact_rssi ? s.impact_rssi+' dBm' : '—') +
       row('감지 문턱', s.impact_min_g + ' g / 승격 ' + s.escalate_g + ' g');
 

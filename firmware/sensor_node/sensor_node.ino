@@ -44,6 +44,25 @@
                             //     동작한다. 딥슬립 배터리 모드에서는 물리적으로
                             //     불가능하다 — 자고 있는 동안은 보낼 수 없다.
 
+// ── 배터리 잔량 측정 ────────────────────────────────────────────────
+// XIAO ESP32C3 에는 배터리 전압 측정 회로가 **없다**(Seeed 공식 확인).
+// 200kΩ 저항 2개로 직접 분압해야 한다:
+//
+//     BAT+ ──[200k]──┬──[200k]── GND
+//                    │
+//                   A0 (D0, GPIO2)
+//
+// 저항을 안 달았으면 0 으로 두면 된다. 잔량만 0 으로 보고되고
+// 나머지 기능은 그대로 동작한다.
+#define HAVE_BATT_SENSE 0
+
+#define BATT_ADC_PIN   D0        // A0
+#define BATT_DIVIDER   2.0f      // 200k : 200k → 전압이 절반으로 들어온다
+
+// 배터리 잔량을 이 주기로 보고한다(초). 3600 = 1시간.
+// 딥슬립 중에도 타이머로 깨어나 보내고 다시 잔다.
+#define BATT_REPORT_SEC 3600
+
 #define HEARTBEAT_SEC 0     // DEBUG_MODE 에서 이 주기로 자동 전송 (0 = 끔).
                             //     두드리지 않아도 무선 경로를 확인할 수 있다.
 // ───────────────────────────────────────────────────────────────────
@@ -170,6 +189,38 @@ bool adxlBegin() {
   return true;
 }
 
+// ─── 배터리 ────────────────────────────────────────────────────────
+
+uint16_t readBatteryMv() {
+#if HAVE_BATT_SENSE
+  // 여러 번 읽어 평균. ADC 한 번 값은 꽤 흔들린다.
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < 16; i++) { sum += analogReadMilliVolts(BATT_ADC_PIN); delay(2); }
+  return (uint16_t)(sum / 16 * BATT_DIVIDER);
+#else
+  return 0;      // 분압 저항 미장착
+#endif
+}
+
+// 리튬폴리머 방전 곡선. 전압-잔량은 선형이 아니라서 표로 잡는다.
+// 선형 근사하면 중간 구간에서 20%p 넘게 틀린다.
+uint8_t battPercent(uint16_t mv) {
+  if (mv == 0) return 0;
+  static const uint16_t V[] = {3300, 3600, 3700, 3750, 3790, 3830,
+                               3870, 3920, 3970, 4020, 4100, 4200};
+  static const uint8_t  P[] = {   0,    5,   10,   20,   30,   40,
+                                 50,   60,   70,   80,   90,  100};
+  if (mv <= V[0]) return 0;
+  if (mv >= V[11]) return 100;
+  for (uint8_t i = 1; i < 12; i++) {
+    if (mv < V[i]) {
+      float t = (float)(mv - V[i-1]) / (V[i] - V[i-1]);
+      return (uint8_t)(P[i-1] + t * (P[i] - P[i-1]));
+    }
+  }
+  return 100;
+}
+
 // ─── 잡음 억제 ─────────────────────────────────────────────────────
 //
 // 800Hz 로 읽고 1000샘플 중 최댓값을 쓰면, 실제 진동이 아니라 센서 잡음의
@@ -272,6 +323,20 @@ void sendLevel(float peak_g) {
   esp_now_send(RECEIVER_MAC, (uint8_t *)&m, sizeof(m));
 }
 
+// 배터리 잔량 보고. 주기적으로(기본 1시간) 보낸다.
+void sendStatus() {
+  ImpactMsg m = {};
+  m.kind = 2;
+  strncpy(m.device_id, DEVICE_ID, sizeof(m.device_id) - 1);
+  m.seq = boot_count;
+  m.battery_mv = readBatteryMv();
+  esp_now_send(RECEIVER_MAC, (uint8_t *)&m, sizeof(m));
+  uint32_t t0 = millis();
+  got_result = false;
+  while (!got_result && millis() - t0 < 300) delay(5);
+  Serial.printf("[배터리] %umV (%u%%)\n", m.battery_mv, battPercent(m.battery_mv));
+}
+
 void sendImpact(float peak_g, float dur_ms) {
   ImpactMsg m = {};
   m.kind = 0;
@@ -279,7 +344,7 @@ void sendImpact(float peak_g, float dur_ms) {
   m.seq = boot_count;
   m.peak_g = peak_g;
   m.duration_ms = dur_ms;
-  m.battery_mv = 0;
+  m.battery_mv = readBatteryMv();   // 경고와 함께 잔량도 보낸다
 
   got_result = false;
   esp_err_t r = esp_now_send(RECEIVER_MAC, (uint8_t *)&m, sizeof(m));
@@ -408,11 +473,17 @@ void setup() {
     }
   }
 
+  // 타이머로 깨어났으면(또는 첫 부팅이면) 배터리 잔량을 보고한다.
+  if (!woke_by_int) sendStatus();
+
   adxlRead(REG_INT_SOURCE);   // 인터럽트 래치 해제
 
   Serial.println("딥슬립 진입\n");
   Serial.flush();
+
+  // 두 가지로 깨어난다: 충격(INT1) 또는 배터리 보고 시각(타이머).
   esp_deep_sleep_enable_gpio_wakeup(BIT(PIN_INT1), ESP_GPIO_WAKEUP_GPIO_HIGH);
+  esp_sleep_enable_timer_wakeup((uint64_t)BATT_REPORT_SEC * 1000000ULL);
   esp_deep_sleep_start();
 }
 

@@ -23,7 +23,8 @@
 // 송신 측 sensor_node.ino 의 ESPNOW_CHANNEL 과 반드시 같아야 한다.
 const uint8_t ESPNOW_CHANNEL = 1;
 
-// kind: 0 = 충격 이벤트, 1 = 실시간 수준 보고 (sensor_node.ino 와 반드시 일치)
+// kind: 0 = 충격 이벤트, 1 = 실시간 수준 보고, 2 = 배터리 잔량
+//       (sensor_node.ino 와 반드시 일치)
 typedef struct __attribute__((packed)) {
   uint8_t  kind;
   char     device_id[8];
@@ -53,6 +54,12 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   if (m.kind == 1) {
     Serial.printf("LEVEL device=%s peak=%.3f rssi=%d\r\n",
                   m.device_id, m.peak_g, rssi);
+    return;
+  }
+
+  if (m.kind == 2) {
+    Serial.printf("BATT device=%s mv=%u rssi=%d\r\n",
+                  m.device_id, m.battery_mv, rssi);
     return;
   }
 

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>배터리 · 잔량 측정 배선</title>
+<style>
+:root{
+  --bg:#f7f6f3; --panel:#fff; --line:#d9d5cc; --ink:#22201d; --dim:#6e6a62;
+  --pos:#c0453c; --neg:#2b2b2b; --sig:#2f6f9f; --ok:#3f7d55; --warn:#a8722a;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#141317; --panel:#1d1c21; --line:#33313a; --ink:#e8e6e1; --dim:#948f87;
+  --pos:#e0736a; --neg:#b9b4ab; --sig:#7aa9cc; --ok:#7fb08c; --warn:#d9a05b;
+}}
+:root[data-theme="dark"]{
+  --bg:#141317; --panel:#1d1c21; --line:#33313a; --ink:#e8e6e1; --dim:#948f87;
+  --pos:#e0736a; --neg:#b9b4ab; --sig:#7aa9cc; --ok:#7fb08c; --warn:#d9a05b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);padding:24px 16px;
+  font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",system-ui,sans-serif;
+  line-height:1.65}
+.wrap{max-width:760px;margin:0 auto}
+h1{font-size:21px;margin:0 0 4px;letter-spacing:-.01em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 24px}
+h2{font-size:15px;margin:30px 0 10px;letter-spacing:-.01em}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:18px;margin-bottom:18px;overflow-x:auto}
+svg{display:block;width:100%;height:auto;min-width:520px}
+.t{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.tl{font:12px -apple-system,system-ui,sans-serif}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:600;font-size:12.5px}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:rgba(128,120,110,.14);padding:1px 5px;border-radius:4px}
+.note{border-left:3px solid var(--warn);padding:2px 0 2px 14px;margin:14px 0;
+  color:var(--dim);font-size:13.5px}
+.danger{border-left-color:var(--pos)}
+ol{padding-left:20px} li{margin:5px 0}
+</style></head><body>
+<div class="wrap">
+
+<h1>진동 노드 — 배터리 및 잔량 측정 배선</h1>
+<p class="sub">XIAO ESP32C3 · ADXL345 · 3.7V 리튬폴리머</p>
+
+<div class="card">
+<svg viewBox="0 0 700 400" role="img" aria-label="배터리와 분압 저항 배선도">
+  <!-- 배터리 -->
+  <rect x="24" y="150" width="96" height="60" rx="7" fill="none" stroke="var(--line)" stroke-width="2"/>
+  <text x="72" y="176" text-anchor="middle" class="tl" fill="var(--ink)">리튬폴리머</text>
+  <text x="72" y="194" text-anchor="middle" class="tl" fill="var(--dim)">3.7V</text>
+  <text x="130" y="167" class="t" fill="var(--pos)">+</text>
+  <text x="130" y="207" class="t" fill="var(--neg)">−</text>
+
+  <!-- + 선 -->
+  <path d="M120 163 H210" stroke="var(--pos)" stroke-width="2.5" fill="none"/>
+  <!-- − 선 -->
+  <path d="M120 203 H210 V330 H470" stroke="var(--neg)" stroke-width="2.5" fill="none"/>
+
+  <!-- BAT+ 분기점 -->
+  <circle cx="210" cy="163" r="4" fill="var(--pos)"/>
+  <path d="M210 163 H470" stroke="var(--pos)" stroke-width="2.5" fill="none"/>
+
+  <!-- 분압: 위 저항 -->
+  <path d="M210 163 V205" stroke="var(--pos)" stroke-width="2.5" fill="none"/>
+  <rect x="196" y="205" width="28" height="46" rx="4" fill="none" stroke="var(--ink)" stroke-width="2"/>
+  <text x="180" y="233" text-anchor="end" class="t" fill="var(--ink)">200kΩ</text>
+  <text x="180" y="248" text-anchor="end" class="tl" fill="var(--dim)">R1 (위)</text>
+
+  <!-- 중점 -->
+  <path d="M210 251 V283" stroke="var(--sig)" stroke-width="2.5" fill="none"/>
+  <circle cx="210" cy="267" r="4.5" fill="var(--sig)"/>
+  <path d="M210 267 H470" stroke="var(--sig)" stroke-width="2.5" fill="none"/>
+  <text x="330" y="259" text-anchor="middle" class="tl" fill="var(--sig)">배터리 전압의 1/2</text>
+
+  <!-- 아래 저항 -->
+  <rect x="196" y="283" width="28" height="46" rx="4" fill="none" stroke="var(--ink)" stroke-width="2"/>
+  <text x="180" y="311" text-anchor="end" class="t" fill="var(--ink)">200kΩ</text>
+  <text x="180" y="326" text-anchor="end" class="tl" fill="var(--dim)">R2 (아래)</text>
+  <path d="M210 329 V330" stroke="var(--neg)" stroke-width="2.5"/>
+  <circle cx="210" cy="330" r="4" fill="var(--neg)"/>
+
+  <!-- XIAO 보드 -->
+  <rect x="470" y="80" width="180" height="280" rx="10" fill="none" stroke="var(--line)" stroke-width="2"/>
+  <text x="560" y="108" text-anchor="middle" class="tl" fill="var(--ink)">XIAO ESP32C3</text>
+  <rect x="530" y="62" width="60" height="18" rx="4" fill="none" stroke="var(--line)" stroke-width="2"/>
+  <text x="560" y="55" text-anchor="middle" class="tl" fill="var(--dim)">USB-C</text>
+
+  <!-- 패드/핀 -->
+  <circle cx="470" cy="163" r="5" fill="var(--pos)"/>
+  <text x="484" y="168" class="t" fill="var(--pos)">BAT+</text>
+  <text x="540" y="168" class="tl" fill="var(--dim)">(뒷면 패드)</text>
+
+  <circle cx="470" cy="267" r="5" fill="var(--sig)"/>
+  <text x="484" y="272" class="t" fill="var(--sig)">A0 / D0</text>
+  <text x="560" y="272" class="tl" fill="var(--dim)">GPIO2</text>
+
+  <circle cx="470" cy="330" r="5" fill="var(--neg)"/>
+  <text x="484" y="335" class="t" fill="var(--neg)">BAT− / GND</text>
+
+  <text x="24" y="30" class="tl" fill="var(--dim)">전원 (배터리 → 보드)</text>
+  <path d="M150 24 H196" stroke="var(--pos)" stroke-width="2.5"/>
+  <text x="210" y="30" class="tl" fill="var(--dim)">+</text>
+  <path d="M240 24 H286" stroke="var(--neg)" stroke-width="2.5"/>
+  <text x="300" y="30" class="tl" fill="var(--dim)">−</text>
+  <path d="M330 24 H376" stroke="var(--sig)" stroke-width="2.5"/>
+  <text x="390" y="30" class="tl" fill="var(--dim)">측정 신호</text>
+</svg>
+</div>
+
+<div class="note danger">
+<b>극성을 반대로 물리면 XIAO 가 즉시 죽습니다.</b> 납땜 전에 멀티미터 DC 전압 모드로
+배터리 두 선을 재서 어느 쪽이 +인지 확인하세요. 빨간 선이 항상 +라고 믿으면 안 됩니다.
+</div>
+
+<h2>연결 요약</h2>
+<table>
+  <tr><th>출발</th><th>도착</th><th>비고</th></tr>
+  <tr><td>배터리 +</td><td>XIAO <code>BAT+</code></td><td>뒷면 패드</td></tr>
+  <tr><td>배터리 −</td><td>XIAO <code>BAT−</code></td><td>뒷면 패드</td></tr>
+  <tr><td><code>BAT+</code></td><td>R1 위쪽</td><td rowspan="3">잔량 측정용 분압<br>(선택 사항)</td></tr>
+  <tr><td>R1 아래 = R2 위</td><td>XIAO <code>A0</code> (D0)</td></tr>
+  <tr><td>R2 아래쪽</td><td><code>GND</code></td></tr>
+</table>
+
+<h2>저항 고르기</h2>
+<p>정확한 값보다 <b>두 저항이 같은 값</b>인 게 중요합니다. 같으면 전압이 정확히 절반이 되고,
+펌웨어의 <code>BATT_DIVIDER</code> 를 <code>2.0</code> 으로 두면 됩니다.</p>
+
+<table>
+  <tr><th>저항쌍</th><th>상시 소모</th><th>비고</th></tr>
+  <tr><td>100kΩ + 100kΩ</td><td>약 18 µA</td><td>쓸 수 있지만 배터리를 가장 많이 먹음</td></tr>
+  <tr><td>200kΩ + 200kΩ</td><td>약 9 µA</td><td>Seeed 권장. 무난함</td></tr>
+  <tr><td>470kΩ + 470kΩ</td><td>약 4 µA</td><td>좋음</td></tr>
+  <tr><td>1MΩ + 1MΩ</td><td>약 1.8 µA</td><td>상한. 더 키우면 ADC 값이 부정확해짐</td></tr>
+</table>
+
+<p>값이 서로 다른 저항밖에 없다면 <code>BATT_DIVIDER = (R1 + R2) / R2</code> 로 바꾸면 됩니다.
+예를 들어 R1=100k, R2=200k 면 <code>1.5</code>.</p>
+
+<h2>배선 후 할 일</h2>
+<ol>
+  <li>펌웨어에서 <code>#define HAVE_BATT_SENSE 1</code> 로 변경</li>
+  <li>업로드 후 시리얼에 <code>[배터리] 3920mV (60%)</code> 가 찍히는지 확인</li>
+  <li>대시보드 진동센서 카드에 잔량이 뜨는지 확인</li>
+</ol>
+
+<div class="note">
+값이 실제 배터리 전압과 다르면 멀티미터로 배터리를 직접 재서 비교하세요.
+차이가 일정한 비율이면 <code>BATT_DIVIDER</code> 를 그 비율만큼 조정하면 됩니다.
+ESP32 의 ADC 는 개체차가 있어 몇 % 오차는 정상입니다.
+</div>
+
+<div class="note danger">
+분압 저항은 배터리를 <b>상시</b> 소모합니다. 딥슬립 전류(약 85 µA)에 더해지므로,
+수명을 최대한 늘리려면 큰 저항을 쓰거나 이 회로를 아예 넣지 마세요.
+잔량 표시는 편의 기능이지 필수가 아닙니다.
+</div>
+
+</div></body></html>
