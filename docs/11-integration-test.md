@@ -76,10 +76,14 @@ git fetch origin experiment-bbox && git checkout experiment-bbox
 
 ```bash
 cd ~/fall-detection && source .venv/bin/activate
-python3 fusion_run.py --camera 9 --y16 \
-  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5
+python3 fusion_run.py --camera 8 --y16 --deghost \
+  --thr 0.35 --lie-hyst 0.3 --lie-commit 2 --mac-iface wlan0
 ```
 
+> ⚠ **bbox 브랜치가 바뀌었습니다 (2026-09 확인).** `--fall-min-hold` 는 없어지고
+> `--lie-commit`(기본 2.0)으로 대체됐습니다. `--mac-iface` 가 추가돼 MAC 을
+> device_id 로 쓰므로 `--device-id auto` 는 더 이상 필요 없습니다.
+>
 > 친구분이 안내한 실행 옵션을 그대로 넘기면 됩니다. 다만 **`--camera` 는 보드에서
 > 9**(친구분 PC 기준 1이 아님)이고, Lepton 을 Linux 에서 쓰려면 **`--y16` 이
 > 필요**합니다. `--display` 는 자동으로 붙으니 넣지 마세요.
@@ -94,8 +98,8 @@ python3 fusion_run.py --camera 9 --y16 \
 ### 1-2. 진동센서 추가
 
 ```bash
-python3 fusion_run.py --camera 9 --y16 \
-  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \
+python3 fusion_run.py --camera 8 --y16 --deghost \
+  --thr 0.35 --lie-hyst 0.3 --lie-commit 2 --mac-iface wlan0 \
   --impact-port /dev/ttyACM0
 ```
 
@@ -107,8 +111,8 @@ python3 fusion_run.py --camera 9 --y16 \
 ### 1-3. SmartThings 연결
 
 ```bash
-python3 fusion_run.py --camera 9 --y16 \
-  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \
+python3 fusion_run.py --camera 8 --y16 --deghost \
+  --thr 0.35 --lie-hyst 0.3 --lie-commit 2 --mac-iface wlan0 \
   --impact-port /dev/ttyACM0 \
   --bridge $(hostname -I | awk '{print $1}'):8088 \
   --device falldetect
@@ -176,7 +180,7 @@ python3 fusion_run.py ... --require-impact
 ```
 
 DANGER 전환 시점 기준으로 이 시간 안의 충격을 같은 사건으로 봅니다.
-`--fall-min-hold`(5초)와 `--state-hold`(2초)를 감안하면 실제 충격은 판정보다
+`--lie-commit`(2초)과 `--state-hold`(2초)를 감안하면 실제 충격은 판정보다
 5~8초 앞서므로, 10초가 적당합니다. 너무 길면 무관한 충격을 엮게 됩니다.
 
 ### 쿨다운
@@ -213,8 +217,8 @@ DANGER 전환 시점 기준으로 이 시간 안의 충격을 같은 사건으�
 | 낙상을 놓친다 | `--thr` 을 낮춘다 (0.35 → 0.3) |
 | 오탐이 많다 | `--thr` 을 올린다, 또는 `--require-impact` |
 | FALL↔LIED 가 깜빡인다 | `--lie-hyst` 를 키운다 (0.3 → 0.4) |
-| 눕기를 낙상으로 본다 | `--fall-min-hold` 를 늘린다, `--lie-aspect` 조정 |
-| 알람이 너무 늦다 | `--fall-min-hold` 를 줄인다, `--state-hold` 도 확인 |
+| 눕기를 낙상으로 본다 | `--lie-commit` 을 늘린다, `--lie-aspect` 조정 |
+| 알람이 너무 늦다 | `--lie-commit` 을 줄인다, `--state-hold` 도 확인 |
 | 빠른 앉기를 낙상으로 본다 | `--collapse-trigger` 를 뺀다 |
 
 `--thr 0.35` 는 친구분이 실사용에서 권한 값이고, 모델의 검증 최적값은 0.4
@@ -239,8 +243,8 @@ User=$USER
 WorkingDirectory=$HOME/fall-detection
 ExecStartPre=/bin/sleep 20
 ExecStart=$HOME/fall-detection/.venv/bin/python fusion_run.py \\
-  --camera 9 --y16 \\
-  --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \\
+  --camera 8 --y16 --deghost \\
+  --thr 0.35 --lie-hyst 0.3 --lie-commit 2 --mac-iface wlan0 \\
   --impact-port /dev/ttyACM0 \\
   --bridge $(hostname -I | awk '{print $1}'):8088 --device falldetect
 Restart=always

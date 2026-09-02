@@ -13,13 +13,13 @@ lepton_live.py(experiment-bbox 브랜치)를 그대로 구동하되,
 사용법:
 
   # 열화상만 (진동센서 없이)
-  python3 fusion_run.py --camera 9 --y16
+  python3 fusion_run.py --camera 8 --y16
 
   # 진동센서까지 (수신기 XIAO 가 USB 로 꽂혀 있어야 함)
-  python3 fusion_run.py --camera 9 --y16 --impact-port /dev/ttyACM0
+  python3 fusion_run.py --camera 8 --y16 --impact-port /dev/ttyACM0
 
   # SmartThings 알림까지
-  python3 fusion_run.py --camera 9 --y16 --impact-port /dev/ttyACM0 \
+  python3 fusion_run.py --camera 8 --y16 --impact-port /dev/ttyACM0 \
       --bridge 172.30.1.33:8088 --device falldetect
 
   # 백엔드 서버는 기본으로 켜져 있다 (cherry-fall.duckdns.org).
@@ -38,9 +38,15 @@ lepton_live.py(experiment-bbox 브랜치)를 그대로 구동하되,
 
 lepton_live.py 의 옵션을 그대로 넘길 수 있다. 최신 bbox 브랜치 권장 조합:
 
-  python3 fusion_run.py --camera 9 --y16 \
-      --collapse-trigger --thr 0.35 --lie-hyst 0.3 --fall-min-hold 5 \
+  python3 fusion_run.py --camera 8 --y16 --deghost \
+      --thr 0.35 --lie-hyst 0.3 --lie-commit 2 --mac-iface wlan0 \
       --impact-port /dev/ttyACM0 --bridge <보드IP>:8088 --device falldetect
+
+⚠ bbox 브랜치가 바뀌었다 (2026-09 확인):
+  · --fall-min-hold 가 없어지고 --lie-commit (기본 2.0) 으로 대체됨
+  · --mac-iface 추가 — MAC 을 device_id 로 쓴다. 이걸 쓰면 --device-id auto 불필요
+  · --thr 기본값이 0.47 로 올라감
+  · camera_source 시그니처가 (idx, y16, reconnect_wait, tick) 4인자로 늘어남
 """
 from __future__ import annotations
 
@@ -1074,11 +1080,12 @@ def fix_frame(frame):
     return a
 
 
-def lepton_frames(idx, y16, reconnect_wait=3.0):
+def lepton_frames(idx, y16, reconnect_wait=3.0, tick=0.2, *args, **kwargs):
     """lepton_live.camera_source 대체.
 
-    최신 bbox 브랜치는 (idx, y16, reconnect_wait) 3인자로 부른다.
-    카메라가 빠지면 reconnect_wait 초 간격으로 재연결을 시도한다.
+    시그니처가 브랜치마다 바뀌어 왔다(3인자 → 4인자). 뒤에 인자가 더
+    붙어도 깨지지 않도록 *args/**kwargs 로 열어 둔다. tick 은 원본이
+    프레임 없을 때 None 을 흘리는 주기인데, 여기서는 쓰지 않는다.
     """
     while True:
         try:

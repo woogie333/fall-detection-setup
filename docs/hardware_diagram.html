@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>하드웨어 구성도</title>
+<style>
+:root{
+  --ink:#1b1d24; --dim:#6b7280; --line:#c8ccd4; --panel:#fff; --bg:#fbfbfc;
+  --navy:#3b5998; --navy-d:#2b4270;
+  --usb:#3f7d55; --rf:#c0453c; --net:#2f6f9f; --pwr:#a8722a;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);padding:20px 16px 48px;
+  font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  line-height:1.6}
+.slide{max-width:1120px;margin:0 auto;background:var(--panel);
+  border:1px solid var(--line);border-radius:6px;padding:28px 32px 34px}
+.head{display:flex;align-items:center;gap:14px;border-bottom:2px solid var(--navy);
+  padding-bottom:12px;margin-bottom:6px}
+.tab{background:var(--navy);color:#fff;font-size:19px;font-weight:700;
+  padding:9px 22px;border-radius:2px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 340px;gap:26px;margin-top:18px;
+  align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+svg{display:block;width:100%;height:auto;min-width:620px}
+.figwrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:middle}
+thead th{background:#eef1f6;font-weight:700;font-size:12px;text-align:center}
+td.c{text-align:center;white-space:nowrap;font-weight:600}
+.small{font-size:11.5px;color:var(--dim)}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin-top:14px;font-size:12.5px;
+  color:var(--dim);align-items:center}
+.legend i{display:inline-block;width:22px;height:3px;border-radius:2px;
+  margin-right:6px;vertical-align:middle}
+.note{margin-top:16px;font-size:12.5px;color:var(--dim);
+  border-left:3px solid var(--line);padding-left:12px}
+h3{font-size:13px;margin:0 0 8px;color:var(--dim);letter-spacing:.04em}
+.dl{font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.bx{font:600 12.5px -apple-system,system-ui,sans-serif}
+.bs{font:11px -apple-system,system-ui,sans-serif}
+</style></head><body>
+<div class="slide">
+
+<div class="head">
+  <span class="tab">하드웨어 / 센서 구성도</span>
+  <span class="sub">열화상 + 무선 진동센서 융합 낙상 감지 시스템</span>
+</div>
+
+<div class="grid">
+<div class="figwrap">
+<svg viewBox="0 0 760 520" role="img"
+     aria-label="Lepton 3.0 은 USB-C 로, 진동 노드는 ESP-NOW 무선으로 수신기를 거쳐 RDK X3 에 연결되고, RDK X3 는 LAN 으로 SmartThings 허브와 백엔드 서버에 연결된다">
+
+  <!-- ── 진동 노드 (좌상) ── -->
+  <rect x="18" y="26" width="196" height="126" rx="6"
+        fill="#fdf4f3" stroke="var(--rf)" stroke-width="1.6"/>
+  <text x="116" y="46" text-anchor="middle" class="bx" fill="var(--rf)">진동 노드 (무선·배터리)</text>
+
+  <rect x="34" y="58" width="78" height="34" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="1.2"/>
+  <text x="73" y="72" text-anchor="middle" class="bs" fill="var(--ink)">XIAO</text>
+  <text x="73" y="85" text-anchor="middle" class="bs" fill="var(--dim)">ESP32C3</text>
+
+  <rect x="122" y="58" width="76" height="34" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="1.2"/>
+  <text x="160" y="72" text-anchor="middle" class="bs" fill="var(--ink)">ADXL345</text>
+  <text x="160" y="85" text-anchor="middle" class="bs" fill="var(--dim)">가속도</text>
+  <path d="M112 75 H122" stroke="var(--ink)" stroke-width="1.4"/>
+  <text x="117" y="105" text-anchor="middle" class="dl" fill="var(--dim)">I2C</text>
+
+  <rect x="34" y="110" width="78" height="28" rx="4" fill="#fff" stroke="var(--pwr)" stroke-width="1.2"/>
+  <text x="73" y="128" text-anchor="middle" class="bs" fill="var(--pwr)">배터리 3.7V</text>
+  <rect x="122" y="110" width="76" height="28" rx="4" fill="#fff" stroke="var(--rf)" stroke-width="1.2"/>
+  <text x="160" y="128" text-anchor="middle" class="bs" fill="var(--rf)">외장 안테나</text>
+
+  <!-- ESP-NOW 무선 -->
+  <path d="M214 89 H300" stroke="var(--rf)" stroke-width="2" stroke-dasharray="7 5"/>
+  <path d="M296 84 L304 89 L296 94 Z" fill="var(--rf)"/>
+  <text x="257" y="80" text-anchor="middle" class="dl" fill="var(--rf)">ESP-NOW 2.4GHz</text>
+  <text x="257" y="106" text-anchor="middle" class="dl" fill="var(--dim)">−30 dBm</text>
+
+  <!-- 수신기 -->
+  <rect x="306" y="66" width="104" height="46" rx="5"
+        fill="#fff" stroke="var(--rf)" stroke-width="1.6"/>
+  <text x="358" y="84" text-anchor="middle" class="bx" fill="var(--ink)">수신기 XIAO</text>
+  <text x="358" y="99" text-anchor="middle" class="bs" fill="var(--dim)">USB 시리얼</text>
+
+  <!-- 수신기 → RDK USB -->
+  <path d="M358 112 V150 H430 V236" stroke="var(--usb)" stroke-width="2" fill="none"/>
+  <path d="M425 232 L430 240 L435 232 Z" fill="var(--usb)"/>
+  <text x="404" y="146" text-anchor="middle" class="dl" fill="var(--usb)">USB-A</text>
+
+  <!-- ── Lepton (좌하) ── -->
+  <rect x="18" y="196" width="196" height="98" rx="6"
+        fill="#f2f8f4" stroke="var(--usb)" stroke-width="1.6"/>
+  <text x="116" y="216" text-anchor="middle" class="bx" fill="var(--usb)">열화상 카메라</text>
+  <rect x="34" y="228" width="164" height="30" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="1.2"/>
+  <text x="116" y="248" text-anchor="middle" class="bs" fill="var(--ink)">FLIR Lepton 3.0 · 160×120</text>
+  <rect x="34" y="262" width="164" height="24" rx="4" fill="#fff" stroke="var(--ink)" stroke-width="1.2"/>
+  <text x="116" y="278" text-anchor="middle" class="bs" fill="var(--dim)">PureThermal 3 (UVC)</text>
+
+  <path d="M214 262 H330" stroke="var(--usb)" stroke-width="2"/>
+  <path d="M326 257 L334 262 L326 267 Z" fill="var(--usb)"/>
+  <text x="272" y="254" text-anchor="middle" class="dl" fill="var(--usb)">USB-C</text>
+
+  <!-- ── RDK X3 (중앙) ── -->
+  <rect x="336" y="196" width="188" height="188" rx="7"
+        fill="#fff" stroke="var(--navy)" stroke-width="2.4"/>
+  <text x="430" y="222" text-anchor="middle" class="bx" fill="var(--navy)">RDK X3</text>
+  <text x="430" y="238" text-anchor="middle" class="bs" fill="var(--dim)">Ubuntu 22.04 · A53 ×4</text>
+
+  <rect x="352" y="250" width="156" height="26" rx="3" fill="#f6f7fa" stroke="var(--line)"/>
+  <text x="430" y="268" text-anchor="middle" class="bs" fill="var(--ink)">MobileNetV3 낙상 추론</text>
+  <rect x="352" y="282" width="156" height="26" rx="3" fill="#f6f7fa" stroke="var(--line)"/>
+  <text x="430" y="300" text-anchor="middle" class="bs" fill="var(--ink)">융합 판정 (열화상 + 충격)</text>
+  <rect x="352" y="314" width="156" height="26" rx="3" fill="#f6f7fa" stroke="var(--line)"/>
+  <text x="430" y="332" text-anchor="middle" class="bs" fill="var(--ink)">웹 대시보드 :8090</text>
+  <rect x="352" y="346" width="156" height="24" rx="3" fill="#f6f7fa" stroke="var(--line)"/>
+  <text x="430" y="362" text-anchor="middle" class="bs" fill="var(--ink)">edgebridge :8088</text>
+
+  <!-- ── 전원 ── -->
+  <rect x="336" y="430" width="188" height="42" rx="5"
+        fill="#fdf8f1" stroke="var(--pwr)" stroke-width="1.6"/>
+  <text x="430" y="447" text-anchor="middle" class="bx" fill="var(--pwr)">전원 어댑터</text>
+  <text x="430" y="462" text-anchor="middle" class="bs" fill="var(--dim)">USB-C · 5V 3A</text>
+  <path d="M430 430 V392" stroke="var(--pwr)" stroke-width="2"/>
+  <path d="M425 396 L430 388 L435 396 Z" fill="var(--pwr)"/>
+
+  <!-- ── 우측: 네트워크 ── -->
+  <path d="M524 268 H590" stroke="var(--net)" stroke-width="2"/>
+  <path d="M586 263 L594 268 L586 273 Z" fill="var(--net)"/>
+  <text x="557" y="260" text-anchor="middle" class="dl" fill="var(--net)">LAN</text>
+
+  <rect x="596" y="238" width="150" height="60" rx="5"
+        fill="#f1f6fb" stroke="var(--net)" stroke-width="1.6"/>
+  <text x="671" y="260" text-anchor="middle" class="bx" fill="var(--net)">SmartThings 허브</text>
+  <text x="671" y="276" text-anchor="middle" class="bs" fill="var(--dim)">LAN Device Trigger</text>
+  <text x="671" y="290" text-anchor="middle" class="bs" fill="var(--dim)">Edge Driver</text>
+
+  <path d="M671 298 V340" stroke="var(--net)" stroke-width="2"/>
+  <path d="M666 336 L671 344 L676 336 Z" fill="var(--net)"/>
+  <rect x="616" y="348" width="110" height="46" rx="5"
+        fill="#fff" stroke="var(--net)" stroke-width="1.6"/>
+  <text x="671" y="368" text-anchor="middle" class="bx" fill="var(--ink)">보호자 휴대폰</text>
+  <text x="671" y="383" text-anchor="middle" class="bs" fill="var(--dim)">푸시 알림</text>
+
+  <!-- 백엔드 -->
+  <path d="M524 218 H590" stroke="var(--net)" stroke-width="2" stroke-dasharray="6 4"/>
+  <path d="M586 213 L594 218 L586 223 Z" fill="var(--net)"/>
+  <text x="557" y="210" text-anchor="middle" class="dl" fill="var(--net)">HTTPS</text>
+  <rect x="596" y="140" width="150" height="58" rx="5"
+        fill="#f1f6fb" stroke="var(--net)" stroke-width="1.6"/>
+  <text x="671" y="162" text-anchor="middle" class="bx" fill="var(--net)">백엔드 서버</text>
+  <text x="671" y="178" text-anchor="middle" class="bs" fill="var(--dim)">JSON · 이벤트/하트비트</text>
+  <path d="M671 198 V212 H594" stroke="none"/>
+
+  <!-- 좌하 여백 캡션 -->
+  <text x="18" y="470" class="dl" fill="var(--dim)">※ mmWave(LD2450)는 이번 구성에서 제외</text>
+</svg>
+
+<div class="legend">
+  <span><i style="background:var(--usb)"></i>USB (영상·시리얼)</span>
+  <span><i style="background:var(--rf);"></i>무선 ESP-NOW</span>
+  <span><i style="background:var(--net)"></i>네트워크</span>
+  <span><i style="background:var(--pwr)"></i>전원</span>
+</div>
+</div>
+
+<div>
+<h3>연결 사양</h3>
+<table>
+  <thead><tr><th style="width:86px">구성 요소</th><th style="width:78px">연결</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="c" rowspan="2">Lepton 3.0<br><span class="small">PureThermal 3</span></td>
+      <td class="c">USB-C</td>
+      <td>RDK X3 USB 포트에 연결 (<b>UVC</b>)<br>
+        <span class="small">보드에서 <code>/dev/video8</code>, Y16 160×120 @9fps</span></td>
+    </tr>
+    <tr><td class="c">전원</td><td>USB 버스 전원 <span class="small">(320mA 피크)</span></td></tr>
+
+    <tr>
+      <td class="c" rowspan="4">진동 노드<br><span class="small">XIAO + ADXL345</span></td>
+      <td class="c">ESP-NOW</td>
+      <td>2.4GHz 무선으로 수신기에 전송 <span class="small">(채널 1)</span></td>
+    </tr>
+    <tr><td class="c">I2C</td>
+      <td>ADXL345 → XIAO<br>
+        <span class="small">SDA=D4(GPIO6), SCL=D5(GPIO7), INT1=D1(GPIO3)</span></td></tr>
+    <tr><td class="c">전원</td>
+      <td>리튬폴리머 3.7V → <code>BAT+/BAT−</code> 패드<br>
+        <span class="small">딥슬립, 충격 시에만 기상</span></td></tr>
+    <tr><td class="c">A0</td>
+      <td>배터리 잔량 측정 <span class="small">(200kΩ 분압)</span></td></tr>
+
+    <tr>
+      <td class="c">수신기 XIAO</td><td class="c">USB</td>
+      <td>RDK X3 에 시리얼로 전달 <span class="small">(<code>/dev/ttyACM0</code>, 115200)</span></td>
+    </tr>
+
+    <tr>
+      <td class="c" rowspan="2">RDK X3</td><td class="c">LAN</td>
+      <td>edgebridge → SmartThings 허브 → 휴대폰 알림</td>
+    </tr>
+    <tr><td class="c">HTTPS</td><td>백엔드 서버로 JSON 전송 <span class="small">(EVENT / HEARTBEAT)</span></td></tr>
+
+    <tr><td class="c">전원</td><td class="c">USB-C</td><td>5V 3A 어댑터</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+진동센서를 <b>무선·배터리</b>로 분리한 이유 — 낙상 충격은 바닥을 통해 전달되므로
+센서가 바닥에 밀착돼야 합니다. 카메라는 벽 상단에 있어야 하고요. 두 요구가
+충돌하기 때문에 유선으로는 한 케이스에 담을 수 없습니다.
+</div>
+</div>
+</div>
+
+</div></body></html>
